@@ -124,9 +124,16 @@ export function createNotifier(config: MailerConfig | null): Notifier {
     if (!transporter) {
       transporter = nodemailer.createTransport({
         host: 'smtp.gmail.com',
-        port: 465,
-        secure: true,
+        // Port 587 (STARTTLS) rather than 465 (implicit SSL): some hosts
+        // (e.g. Hetzner) block outbound 465 but leave 587 open.
+        port: 587,
+        secure: false,
+        requireTLS: true,
         auth: { user: config.user, pass: config.appPassword },
+        // Fail fast instead of hanging the request if outbound SMTP is blocked.
+        connectionTimeout: 10_000,
+        greetingTimeout: 10_000,
+        socketTimeout: 15_000,
       });
     }
     return transporter;

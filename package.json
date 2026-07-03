@@ -7,7 +7,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc && cp -R src/web dist/web",
+    "build": "tsc && rm -rf dist/web && cp -R src/web dist/web",
     "start": "node dist/server/index.js",
     "dev": "tsx watch src/server/index.ts",
     "scan-once": "tsx scripts/scan-once.ts",

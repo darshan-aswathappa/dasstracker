@@ -13,22 +13,40 @@ export interface Scheduler {
   stop(): void;
 }
 
+/** Clamp an interval to the range a minute-field cron can express (1..59). */
+function clampStep(n: number): number {
+  return Math.min(Math.max(Math.floor(n), 1), 59);
+}
+
 /** Build a cron expression that fires every N minutes (N clamped to 1..59). */
 function everyNMinutes(n: number): string {
-  const step = Math.min(Math.max(Math.floor(n), 1), 59);
-  return `*/${step} * * * *`;
+  return `*/${clampStep(n)} * * * *`;
+}
+
+/**
+ * The next wall-clock time an every-N-minutes cron will actually fire, relative
+ * to `from`. Cron fires on minutes divisible by `step` within each hour (and
+ * rolls over at the top of the hour), so this mirrors that instead of naively
+ * adding the interval — which would be wrong at startup and whenever the step
+ * does not divide 60 evenly.
+ */
+function nextRunFrom(from: Date, step: number): Date {
+  const d = new Date(from);
+  d.setSeconds(0, 0);
+  do {
+    d.setMinutes(d.getMinutes() + 1);
+  } while (d.getMinutes() % step !== 0);
+  return d;
 }
 
 export function createScheduler(runScan: () => Promise<unknown>): Scheduler {
   let task: ScheduledTask | null = null;
-  let intervalMs = 0;
-  let lastStart = 0;
+  let step = 0;
   let running = false;
 
   const tick = async () => {
     if (running) return; // avoid overlapping scans
     running = true;
-    lastStart = Date.now();
     try {
       await runScan();
     } finally {
@@ -38,9 +56,8 @@ export function createScheduler(runScan: () => Promise<unknown>): Scheduler {
 
   const schedule = (intervalMinutes: number) => {
     if (task) task.stop();
-    intervalMs = Math.min(Math.max(Math.floor(intervalMinutes), 1), 59) * 60_000;
+    step = clampStep(intervalMinutes);
     task = cron.schedule(everyNMinutes(intervalMinutes), tick);
-    lastStart = Date.now();
   };
 
   return {
@@ -51,8 +68,8 @@ export function createScheduler(runScan: () => Promise<unknown>): Scheduler {
       schedule(intervalMinutes);
     },
     nextRunAt() {
-      if (!task || intervalMs === 0) return null;
-      return new Date(lastStart + intervalMs).toISOString();
+      if (!task || step === 0) return null;
+      return nextRunFrom(new Date(), step).toISOString();
     },
     stop() {
       if (task) task.stop();

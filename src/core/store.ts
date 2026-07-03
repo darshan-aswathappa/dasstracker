@@ -200,7 +200,12 @@ export class Store {
     try {
       const parsed = JSON.parse(raw) as Partial<TrackerConfig>;
       return { ...defaults, ...parsed };
-    } catch {
+    } catch (err) {
+      console.warn(
+        `[store] Ignoring malformed config in settings; falling back to defaults: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
       return defaults;
     }
   }

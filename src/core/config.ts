@@ -11,6 +11,15 @@ import type { TrackerConfig } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Scan-interval bounds. The scheduler fires on a minute-field cron stepping
+ * every N minutes, so the largest interval it can express exactly is 59
+ * minutes. Clamping here keeps the persisted/displayed interval identical to
+ * what actually runs.
+ */
+export const MIN_INTERVAL_MINUTES = 1;
+export const MAX_INTERVAL_MINUTES = 59;
+
 /** Load the default config shipped in config/defaults.json. */
 export function loadDefaults(): TrackerConfig {
   const path = resolve(__dirname, '../../config/defaults.json');
@@ -33,9 +42,14 @@ export function sanitizeConfig(
 ): TrackerConfig {
   const next: TrackerConfig = { ...current, ...patch };
 
-  // Interval must be a sane positive integer (>= 1 minute).
+  // Interval must be a sane positive integer, clamped to the range the
+  // scheduler can honor (1..59 min). Values above the max are clamped rather
+  // than silently diverging from the running schedule.
   const interval = Number(next.intervalMinutes);
-  next.intervalMinutes = Number.isFinite(interval) && interval >= 1 ? Math.floor(interval) : current.intervalMinutes;
+  next.intervalMinutes =
+    Number.isFinite(interval) && interval >= MIN_INTERVAL_MINUTES
+      ? Math.min(Math.floor(interval), MAX_INTERVAL_MINUTES)
+      : current.intervalMinutes;
 
   next.keywords = Array.isArray(next.keywords)
     ? next.keywords.map((k) => String(k).trim()).filter(Boolean)

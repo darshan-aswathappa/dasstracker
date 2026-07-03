@@ -1,0 +1,33 @@
+{
+  "intervalMinutes": 10,
+  "country": "United States",
+  "type": "Regular",
+  "lang": "en",
+  "keywords": [
+    "software",
+    "developer",
+    "development",
+    "engineer",
+    "engineering",
+    "AI",
+    "artificial intelligence",
+    "machine learning",
+    "ML",
+    "data engineer",
+    "data scientist",
+    "devops",
+    "cloud",
+    "full stack",
+    "fullstack",
+    "frontend",
+    "front end",
+    "backend",
+    "back end",
+    "SRE",
+    "programmer"
+  ],
+  "categoryWhitelist": [
+    "Research & Development",
+    "Information Technology"
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "name": "dasstracker",
+  "version": "1.0.0",
+  "description": "Job tracker for new technical roles on the Dassault Systemes careers site",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc && cp -R src/web dist/web",
+    "start": "node dist/server/index.js",
+    "dev": "tsx watch src/server/index.ts",
+    "scan-once": "tsx scripts/scan-once.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@fastify/static": "^7.0.4",
+    "better-sqlite3": "^11.3.0",
+    "fastify": "^4.28.1",
+    "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.15"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^20.16.5",
+    "@types/node-cron": "^3.0.11",
+    "@types/nodemailer": "^6.4.16",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  }
+}

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DassTracker</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">DASS<span>TRACKER</span></div>
+      <div class="status" id="statusBar">connecting…</div>
+    </header>
+
+    <main>
+      <section class="col feed">
+        <div class="section-head">
+          <h2>NEW TECHNICAL JOBS</h2>
+          <div class="controls">
+            <label class="chk"><input type="checkbox" id="onlyMatched" checked /> matched only</label>
+            <button id="scanNow">SCAN NOW</button>
+          </div>
+        </div>
+        <div id="jobs" class="jobs"><div class="empty">// loading…</div></div>
+      </section>
+
+      <aside class="col config">
+        <div class="section-head"><h2>CONFIG</h2></div>
+        <div class="cfg-body">
+          <label class="field">
+            <span>Scan interval (min)</span>
+            <input type="number" id="intervalMinutes" min="1" max="59" />
+          </label>
+          <label class="field">
+            <span>Country</span>
+            <input type="text" id="country" />
+          </label>
+          <label class="field">
+            <span>Type</span>
+            <input type="text" id="type" />
+          </label>
+          <label class="field">
+            <span>Notify email (blank = GMAIL_USER)</span>
+            <input type="text" id="notifyTo" placeholder="you@gmail.com" />
+          </label>
+          <label class="field">
+            <span>Title keywords (one per line)</span>
+            <textarea id="keywords" rows="8"></textarea>
+          </label>
+          <label class="field">
+            <span>Category whitelist (one per line)</span>
+            <textarea id="categoryWhitelist" rows="3"></textarea>
+          </label>
+          <div class="cfg-actions">
+            <button id="saveConfig">SAVE CONFIG</button>
+            <button id="testEmail" class="secondary">TEST EMAIL</button>
+          </div>
+          <div id="cfgMsg" class="cfg-msg"></div>
+          <div id="emailState" class="email-state"></div>
+        </div>
+      </aside>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

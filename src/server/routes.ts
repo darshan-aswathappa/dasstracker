@@ -42,7 +42,7 @@ export function registerRoutes(
     return { result };
   });
 
-  // Status: last scan, next scan time, totals, email config state, recent scans.
+  // Status: last scan, next scan time, totals, notifier config state, recent scans.
   app.get('/api/status', async () => {
     const notifier = ctx.buildNotifier();
     return {
@@ -52,6 +52,7 @@ export function registerRoutes(
       nextScanAt: scheduler.nextRunAt(),
       intervalMinutes: ctx.getConfig().intervalMinutes,
       emailConfigured: notifier.configured,
+      whatsappConfigured: ctx.buildWhatsApp().configured,
     };
   });
 
@@ -82,6 +83,24 @@ export function registerRoutes(
           notifiedAt: null,
         },
       ]);
+      reply.send({ ok: true });
+    } catch (err) {
+      reply.code(500).send({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // Send a test WhatsApp message via CallMeBot to verify the phone + API key.
+  app.post('/api/test-whatsapp', async (_req, reply) => {
+    const wa = ctx.buildWhatsApp();
+    if (!wa.configured) {
+      reply.code(400).send({
+        ok: false,
+        error: 'WhatsApp not configured. Set CALLMEBOT_PHONE and CALLMEBOT_APIKEY in .env.',
+      });
+      return;
+    }
+    try {
+      await wa.sendText('✅ DassTracker test message — WhatsApp notifications are working.');
       reply.send({ ok: true });
     } catch (err) {
       reply.code(500).send({ ok: false, error: err instanceof Error ? err.message : String(err) });

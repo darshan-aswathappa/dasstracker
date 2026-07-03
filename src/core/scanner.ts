@@ -12,11 +12,14 @@ import { fetchJobs, type FetchQuery } from './fetcher.js';
 import { matchJob } from './matcher.js';
 import type { Store } from './store.js';
 import type { Notifier } from './notifier.js';
+import type { WhatsAppNotifier } from './whatsapp.js';
 import type { ScanResult, TrackerConfig } from './types.js';
 
 export interface ScanDeps {
   store: Store;
   notifier: Notifier;
+  /** Optional WhatsApp channel; digests fan out to it alongside email. */
+  whatsapp?: WhatsAppNotifier;
   config: TrackerConfig;
   fetchImpl?: typeof fetch;
   now?: () => Date;
@@ -25,7 +28,7 @@ export interface ScanDeps {
 
 /** Run a single scan cycle and return its result (also persisted). */
 export async function runScan(deps: ScanDeps): Promise<ScanResult> {
-  const { store, notifier, config } = deps;
+  const { store, notifier, whatsapp, config } = deps;
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? (() => {});
   const startedAt = now().toISOString();
@@ -82,19 +85,42 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
       log(
         `Baseline scan: seeded ${result.newCount} jobs (${pending.length} matched), no email sent.`,
       );
-    } else if (notifier.configured) {
-      const pending = store.unnotifiedMatched();
+    } else {
+      const anyConfigured = notifier.configured || (whatsapp?.configured ?? false);
+      const pending = anyConfigured ? store.unnotifiedMatched() : [];
       if (pending.length > 0) {
-        await notifier.send(pending);
-        store.markNotified(
-          pending.map((j) => j.cardId),
-          now().toISOString(),
-        );
-        result.notifiedCount = pending.length;
-        log(`Sent digest for ${pending.length} new matching job(s).`);
+        // Best-effort per channel: a failure in one (e.g. SMTP blocked) must
+        // not prevent the other from delivering, and we only mark the jobs as
+        // notified once at least one channel succeeded (so failures retry).
+        let delivered = false;
+        if (notifier.configured) {
+          try {
+            await notifier.send(pending);
+            delivered = true;
+            log(`Sent email digest for ${pending.length} new matching job(s).`);
+          } catch (err) {
+            log(`Email digest failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        if (whatsapp?.configured) {
+          try {
+            await whatsapp.send(pending);
+            delivered = true;
+            log(`Sent WhatsApp digest for ${pending.length} new matching job(s).`);
+          } catch (err) {
+            log(`WhatsApp digest failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+        if (delivered) {
+          store.markNotified(
+            pending.map((j) => j.cardId),
+            now().toISOString(),
+          );
+          result.notifiedCount = pending.length;
+        }
+      } else if (newMatched > 0 && !anyConfigured) {
+        log(`${newMatched} new matching job(s) found but no notifier is configured.`);
       }
-    } else if (newMatched > 0) {
-      log(`${newMatched} new matching job(s) found but email is not configured.`);
     }
 
     log(

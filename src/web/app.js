@@ -87,10 +87,16 @@ async function loadStatus() {
     const mail = s.emailConfigured
       ? '<span class="ok">email ✓</span>'
       : '<span class="err">email off</span>';
-    bar.innerHTML = `${lastTxt}${nextTxt} · <b>${s.totalJobs}</b> tracked · every ${s.intervalMinutes}m · ${mail}`;
+    const wa = s.whatsappConfigured
+      ? '<span class="ok">wa ✓</span>'
+      : '<span class="err">wa off</span>';
+    bar.innerHTML = `${lastTxt}${nextTxt} · <b>${s.totalJobs}</b> tracked · every ${s.intervalMinutes}m · ${mail} · ${wa}`;
     $('emailState').innerHTML = s.emailConfigured
       ? '● SMTP configured'
       : '○ email not configured — set GMAIL_USER / GMAIL_APP_PASSWORD in .env';
+    $('whatsappState').innerHTML = s.whatsappConfigured
+      ? '● WhatsApp (CallMeBot) configured'
+      : '○ WhatsApp not configured — set CALLMEBOT_PHONE / CALLMEBOT_APIKEY in .env';
   } catch (err) {
     bar.innerHTML = `<span class="err">status error: ${esc(err.message)}</span>`;
   }
@@ -172,9 +178,28 @@ async function testEmail() {
   }
 }
 
+async function testWhatsApp() {
+  const msg = $('cfgMsg');
+  const btn = $('testWhatsapp');
+  btn.disabled = true;
+  msg.className = 'cfg-msg';
+  msg.textContent = 'sending test WhatsApp…';
+  try {
+    await api('/api/test-whatsapp', { method: 'POST' });
+    msg.className = 'cfg-msg ok';
+    msg.textContent = 'test WhatsApp sent — check your phone';
+  } catch (err) {
+    msg.className = 'cfg-msg err';
+    msg.textContent = `error: ${err.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 $('scanNow').addEventListener('click', scanNow);
 $('saveConfig').addEventListener('click', saveConfig);
 $('testEmail').addEventListener('click', testEmail);
+$('testWhatsapp').addEventListener('click', testWhatsApp);
 $('onlyMatched').addEventListener('change', loadJobs);
 
 function refresh() {

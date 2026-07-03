@@ -9,6 +9,11 @@ import type { Store } from '../core/store.js';
 import { Store as StoreImpl } from '../core/store.js';
 import { loadDefaults } from '../core/config.js';
 import { createNotifier, mailerConfigFromEnv, type Notifier } from '../core/notifier.js';
+import {
+  createWhatsAppNotifier,
+  whatsappConfigFromEnv,
+  type WhatsAppNotifier,
+} from '../core/whatsapp.js';
 import { runScan } from '../core/scanner.js';
 import type { ScanResult, TrackerConfig } from '../core/types.js';
 
@@ -17,6 +22,7 @@ export interface AppContext {
   getConfig(): TrackerConfig;
   setConfig(next: TrackerConfig): void;
   buildNotifier(): Notifier;
+  buildWhatsApp(): WhatsAppNotifier;
   scan(): Promise<ScanResult>;
   log(msg: string): void;
 }
@@ -38,13 +44,17 @@ export function createApp(env: NodeJS.ProcessEnv = process.env): AppContext {
     return createNotifier(mailerConfigFromEnv(env, cfg.notifyTo));
   };
 
+  const buildWhatsApp = (): WhatsAppNotifier =>
+    createWhatsAppNotifier(whatsappConfigFromEnv(env));
+
   const scan = (): Promise<ScanResult> =>
     runScan({
       store,
       notifier: buildNotifier(),
+      whatsapp: buildWhatsApp(),
       config: getConfig(),
       log,
     });
 
-  return { store, getConfig, setConfig, buildNotifier, scan, log };
+  return { store, getConfig, setConfig, buildNotifier, buildWhatsApp, scan, log };
 }

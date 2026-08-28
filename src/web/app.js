@@ -107,9 +107,17 @@ async function loadConfig() {
   $('intervalMinutes').value = config.intervalMinutes;
   $('country').value = config.country;
   $('type').value = config.type;
-  $('notifyTo').value = config.notifyTo || '';
+  // Tolerate the legacy bare-string form as well as the array form.
+  $('notifyTo').value = [].concat(config.notifyTo || []).join(', ');
   $('keywords').value = (config.keywords || []).join('\n');
   $('categoryWhitelist').value = (config.categoryWhitelist || []).join('\n');
+}
+
+function commasToArray(text) {
+  return text
+    .split(/[,;\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function linesToArray(text) {
@@ -128,7 +136,7 @@ async function saveConfig() {
       intervalMinutes: Number($('intervalMinutes').value),
       country: $('country').value.trim(),
       type: $('type').value.trim(),
-      notifyTo: $('notifyTo').value.trim() || null,
+      notifyTo: commasToArray($('notifyTo').value),
       keywords: linesToArray($('keywords').value),
       categoryWhitelist: linesToArray($('categoryWhitelist').value),
     };

@@ -11,7 +11,7 @@ const config: TrackerConfig = {
   lang: 'en',
   keywords: ['engineer', 'software'],
   categoryWhitelist: ['Information Technology'],
-  notifyTo: null,
+  notifyTo: [],
 };
 
 /** Build a fake API page response from a list of (id, title) tuples. */

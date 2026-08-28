@@ -12,7 +12,8 @@ import type { StoredJob } from './types.js';
 export interface MailerConfig {
   user: string;
   appPassword: string;
-  to: string;
+  /** One or more recipients; guaranteed non-empty. */
+  to: string[];
 }
 
 export interface Notifier {
@@ -21,17 +22,49 @@ export interface Notifier {
   readonly configured: boolean;
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** True if the string looks like a deliverable address. */
+export function isValidEmail(address: string): boolean {
+  return EMAIL_RE.test(address);
+}
+
+/**
+ * Normalize an address list into trimmed, de-duplicated entries.
+ *
+ * Accepts an array or a separated string so that a hand-edited NOTIFY_TO, a
+ * pasted "a@x.com, b@y.com", and a config written before multi-recipient
+ * support (a bare string) all parse identically. Never throws — callers that
+ * need rejection validate with isValidEmail.
+ */
+export function parseEmailList(input: string | string[] | null | undefined): string[] {
+  if (input == null) return [];
+  const parts = Array.isArray(input) ? input : String(input).split(/[,;\n]/);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of parts) {
+    const address = String(part).trim();
+    // De-dupe case-insensitively, but keep the casing the user typed.
+    if (!address || seen.has(address.toLowerCase())) continue;
+    seen.add(address.toLowerCase());
+    out.push(address);
+  }
+  return out;
+}
+
 /** Read mailer config from environment, returning null if incomplete. */
 export function mailerConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
-  notifyToOverride?: string | null,
+  notifyToOverride?: string | string[] | null,
 ): MailerConfig | null {
   const user = env.GMAIL_USER?.trim();
   // Gmail shows App Passwords as 4 space-separated groups, but auth needs the
   // raw 16 chars — strip all whitespace so it works pasted either way.
   const appPassword = env.GMAIL_APP_PASSWORD?.replace(/\s+/g, '');
   if (!user || !appPassword) return null;
-  const to = (notifyToOverride?.trim() || env.NOTIFY_TO?.trim() || user);
+  const override = parseEmailList(notifyToOverride);
+  const fromEnv = parseEmailList(env.NOTIFY_TO);
+  const to = override.length ? override : fromEnv.length ? fromEnv : [user];
   return { user, appPassword, to };
 }
 
@@ -147,9 +180,17 @@ export function createNotifier(config: MailerConfig | null): Notifier {
     async send(jobs: StoredJob[]) {
       if (jobs.length === 0) return;
       const { subject, text, html } = buildDigest(jobs);
+      // With several recipients, address the mail to the sending account and
+      // BCC the list so no recipient sees the others' addresses. A single
+      // recipient goes in To: directly — a lone BCC with the sender in To:
+      // reads like it was misdelivered.
+      const recipients =
+        config.to.length > 1
+          ? { to: config.user, bcc: config.to }
+          : { to: config.to[0] ?? config.user };
       await getTransport().sendMail({
         from: `DassTracker <${config.user}>`,
-        to: config.to,
+        ...recipients,
         subject,
         text,
         html,

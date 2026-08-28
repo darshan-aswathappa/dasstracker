@@ -7,7 +7,7 @@
 import { resolve } from 'node:path';
 import type { Store } from '../core/store.js';
 import { Store as StoreImpl } from '../core/store.js';
-import { loadDefaults } from '../core/config.js';
+import { loadDefaults, sanitizeConfig } from '../core/config.js';
 import { createNotifier, mailerConfigFromEnv, type Notifier } from '../core/notifier.js';
 import {
   createWhatsAppNotifier,
@@ -36,7 +36,10 @@ export function createApp(env: NodeJS.ProcessEnv = process.env): AppContext {
     console.log(`[${new Date().toISOString()}] ${msg}`);
   };
 
-  const getConfig = (): TrackerConfig => store.loadConfig(defaults);
+  // Sanitize on read as well as write: a settings row persisted before
+  // multi-recipient support holds notifyTo as a bare string, and every consumer
+  // downstream expects the array form.
+  const getConfig = (): TrackerConfig => sanitizeConfig({}, store.loadConfig(defaults));
   const setConfig = (next: TrackerConfig): void => store.saveConfig(next);
 
   const buildNotifier = (): Notifier => {
@@ -45,7 +48,7 @@ export function createApp(env: NodeJS.ProcessEnv = process.env): AppContext {
   };
 
   const buildWhatsApp = (): WhatsAppNotifier =>
-    createWhatsAppNotifier(whatsappConfigFromEnv(env));
+    createWhatsAppNotifier(whatsappConfigFromEnv(env), fetch, log);
 
   const scan = (): Promise<ScanResult> =>
     runScan({

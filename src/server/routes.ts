@@ -5,6 +5,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { AppContext } from './app.js';
 import { sanitizeConfig } from '../core/config.js';
+import { isValidEmail, parseEmailList } from '../core/notifier.js';
 import type { Scheduler } from './scheduler.js';
 import type { TrackerConfig } from '../core/types.js';
 
@@ -28,6 +29,19 @@ export function registerRoutes(
   app.put('/api/config', async (req, reply) => {
     const patch = (req.body ?? {}) as Partial<TrackerConfig>;
     const current = ctx.getConfig();
+
+    // Reject bad recipients rather than silently dropping them — a typo'd
+    // address would otherwise look saved while never receiving a digest.
+    if (patch.notifyTo !== undefined) {
+      const invalid = parseEmailList(patch.notifyTo).filter((a) => !isValidEmail(a));
+      if (invalid.length > 0) {
+        reply.code(400).send({
+          error: `Invalid email address${invalid.length > 1 ? 'es' : ''}: ${invalid.join(', ')}`,
+        });
+        return;
+      }
+    }
+
     const next = sanitizeConfig(patch, current);
     ctx.setConfig(next);
     if (next.intervalMinutes !== current.intervalMinutes) {

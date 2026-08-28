@@ -71,7 +71,7 @@ describe('Store', () => {
       lang: 'en',
       keywords: ['a'],
       categoryWhitelist: [],
-      notifyTo: null,
+      notifyTo: [],
     };
     expect(store.loadConfig(defaults)).toEqual(defaults);
     store.saveConfig({ ...defaults, intervalMinutes: 5, keywords: ['b', 'c'] });

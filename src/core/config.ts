@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import type { TrackerConfig } from './types.js';
+import { parseEmailList } from './notifier.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -31,7 +32,7 @@ export function loadDefaults(): TrackerConfig {
     lang: raw.lang ?? 'en',
     keywords: raw.keywords ?? [],
     categoryWhitelist: raw.categoryWhitelist ?? [],
-    notifyTo: raw.notifyTo ?? null,
+    notifyTo: parseEmailList(raw.notifyTo),
   };
 }
 
@@ -61,7 +62,9 @@ export function sanitizeConfig(
   next.country = String(next.country || current.country).trim();
   next.type = String(next.type || current.type).trim();
   next.lang = String(next.lang || current.lang).trim();
-  next.notifyTo = next.notifyTo ? String(next.notifyTo).trim() : null;
+  // Tolerates a bare string from configs written before multi-recipient
+  // support, so loading an old settings row normalizes it in place.
+  next.notifyTo = parseEmailList(next.notifyTo);
 
   return next;
 }

@@ -29,7 +29,8 @@ export interface TrackerConfig {
   lang: string;
   keywords: string[];
   categoryWhitelist: string[];
-  notifyTo: string | null;
+  /** Digest recipients. Empty means "fall back to NOTIFY_TO, then GMAIL_USER". */
+  notifyTo: string[];
 }
 
 /** Result of a single scan cycle, recorded for the status UI. */

@@ -95,6 +95,31 @@ export function reviewProblems(pageText: string, profile: ApplicationProfile): s
   return problems;
 }
 
+/**
+ * The requisition the portal says this application is for, when it says so.
+ *
+ * Every step after sign-in carries a banner reading "Applying for: <title>
+ * (Job Number: 550383)". Since the portal carries a candidate's answers
+ * forward and can resume a saved draft, that number is the only thing
+ * confirming the application belongs to the job we meant to apply to.
+ *
+ * Returns the number found, or null when the page does not state one.
+ */
+export function statedJobNumber(pageText: string): string | null {
+  const match = flatten(pageText).match(/job number:\s*([0-9]{3,})/i);
+  return match ? match[1] : null;
+}
+
+/**
+ * The wrong requisition, if the page names one. null means "no objection" —
+ * either it matches, or the page says nothing to check against.
+ */
+export function wrongJobNumber(pageText: string, expected: string): string | null {
+  const stated = statedJobNumber(pageText);
+  if (stated === null) return null;
+  return stated === expected.trim() ? null : stated;
+}
+
 /** The step a page represents, identified from its title and content. */
 export type FlowStep =
   | 'login'

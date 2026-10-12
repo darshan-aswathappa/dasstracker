@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { reviewProblems, identifyStep } from '../src/core/review.js';
+import {
+  reviewProblems,
+  identifyStep,
+  statedJobNumber,
+  wrongJobNumber,
+} from '../src/core/review.js';
 import { loadApplicationProfile } from '../src/core/profile.js';
 
 const profile = loadApplicationProfile();
@@ -142,5 +147,33 @@ describe('the privacy agreement step', () => {
           'please accept or decline our Privacy Agreement.',
       ),
     ).toBe('privacy');
+  });
+});
+
+describe('the requisition guard', () => {
+  const BANNER =
+    'Applying for: Staff Cloud Platform Engineer (Job Number: 550383) ' +
+    'PERSONAL INFORMATION DIVERSITY - PART 1 FILE ATTACHMENTS REVIEW AND SUBMIT';
+
+  it('reads the job number off the banner', () => {
+    expect(statedJobNumber(BANNER)).toBe('550383');
+  });
+
+  it('raises no objection when the number matches', () => {
+    expect(wrongJobNumber(BANNER, '550383')).toBeNull();
+  });
+
+  it('catches an application for a different requisition', () => {
+    // A resumed draft for another job would otherwise be submitted silently.
+    expect(wrongJobNumber(BANNER, '550021')).toBe('550383');
+  });
+
+  it('raises no objection when the page states no number', () => {
+    expect(wrongJobNumber('Privacy Agreement I ACCEPT I DECLINE', '550383')).toBeNull();
+    expect(statedJobNumber('')).toBeNull();
+  });
+
+  it('is not fooled by other numbers on the page', () => {
+    expect(statedJobNumber('Posted on: 10/12/26 Job Number: 550029 Date 10/8/26')).toBe('550029');
   });
 });

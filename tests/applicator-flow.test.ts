@@ -51,6 +51,68 @@ interface Captured {
   langChanged?: string;
   /** Serve the variant whose language is already the wanted one. */
   privacyAlreadyEnglish?: boolean;
+  /** Server-side attachment state; one toggle per request, like the portal. */
+  attachRows?: AttachRow[];
+  /** How many checkbox post-backs the flow caused. */
+  toggles?: number;
+  /** Job number the banner claims, when it should differ from the real one. */
+  bannerJob?: string;
+}
+
+interface AttachRow {
+  file: string;
+  relevant: boolean;
+  resume: boolean;
+}
+
+/** The state the real portal was observed in: Resume ticked, Relevant not. */
+function initialAttachments(): AttachRow[] {
+  return [
+    { file: 'Nireeksha_Huns_Resume_Dassault.pdf', relevant: false, resume: false },
+    { file: 'Nireeksha_AI_Engineer.pdf', relevant: false, resume: true },
+    { file: 'Nireeksha_Huns_Resume.pdf', relevant: false, resume: false },
+  ];
+}
+
+/**
+ * Render the attachments step from server state.
+ *
+ * Each checkbox posts back and the page is re-rendered, so a second click made
+ * in the same pass is thrown away — which is exactly how the real portal
+ * behaves, and what a batched implementation gets wrong.
+ */
+function attachmentsPage(job: string): string {
+  const rows = (captured.attachRows ?? []).map(
+    (r, i) => `<tr>
+      <td><input type="checkbox" ${r.relevant ? 'checked' : ''}
+            onclick="toggle(${i},'relevant')"></td>
+      <td><input type="checkbox" ${r.resume ? 'checked' : ''}
+            onclick="toggle(${i},'resume')"></td>
+      <td><a href="#">${r.file}</a></td><td>10/12/26</td>
+    </tr>`,
+  );
+  return `<!doctype html><html><head><title>File Attachments</title></head><body>
+    <p>Applying for: Staff Cloud Platform Engineer (Job Number: ${job})</p>
+    <p>*Please attach your resume to your application</p>
+    <table>
+      <tr><th>Relevant Files</th><th>Resume</th><th>File Name</th><th>Date</th></tr>
+      ${rows.join('')}
+    </table>
+    <form id="tf" method="POST"
+          action="/careersection/careersection/candidateacquisition/flow.jsf?step=toggle">
+      <input type="hidden" name="row" id="trow"><input type="hidden" name="col" id="tcol">
+    </form>
+    <form id="cf" method="POST"
+          action="/careersection/careersection/candidateacquisition/flow.jsf?step=review"></form>
+    <a href="#" onclick="document.getElementById('cf').submit();return false;">CONTINUE</a>
+    <a href="#" onclick="return false;">SAVE AS DRAFT</a>
+    <script>
+      function toggle(row, col) {
+        document.getElementById('trow').value = row;
+        document.getElementById('tcol').value = col;
+        document.getElementById('tf').submit();
+      }
+    </script></body></html>`;
 }
 
 let server: Server;
@@ -70,7 +132,10 @@ function parseBody(body: string): Record<string, string[]> {
  * Either way it lists every answer as text, like the real page.
  */
 function reviewPage(overrides: Record<string, string> = {}): string {
-  const resumes = captured.attachments?.res ?? ['Nireeksha_AI_Engineer.pdf'];
+  const flagged = (captured.attachRows ?? []).filter((r) => r.relevant && r.resume);
+  const resumes = flagged.length
+    ? flagged.map((r) => r.file)
+    : (captured.attachments?.res ?? ['Nireeksha_AI_Engineer.pdf']);
   const answers = {
     sponsorship: 'Yes',
     authorized: 'Yes',
@@ -162,7 +227,20 @@ beforeAll(async () => {
       }
       if (step === 'attachments') {
         captured.diversity = parseBody(body);
-        return send(page('attachments.html'));
+        captured.attachRows ??= initialAttachments();
+        return send(attachmentsPage(captured.bannerJob ?? '550021'));
+      }
+      if (step === 'toggle') {
+        const f = parseBody(body);
+        const row = Number(f.row?.[0] ?? -1);
+        const col = (f.col?.[0] ?? '') as 'relevant' | 'resume';
+        const rows = captured.attachRows ?? initialAttachments();
+        if (rows[row] && (col === 'relevant' || col === 'resume')) {
+          rows[row] = { ...rows[row], [col]: !rows[row][col] };
+        }
+        captured.attachRows = rows;
+        captured.toggles = (captured.toggles ?? 0) + 1;
+        return send(attachmentsPage(captured.bannerJob ?? '550021'));
       }
       if (step === 'review') {
         captured.attachments = parseBody(body);
@@ -249,10 +327,16 @@ describe('applicator against a Taleo replica', () => {
     expect(captured.diversity?.r).toEqual(['on']); // Asian, and only Asian
   });
 
-  it('ticks only the wanted resume, clearing the one left checked', () => {
-    // The fixture starts with Nireeksha_Huns_Resume.pdf ticked in both columns.
-    expect(captured.attachments?.rel).toEqual(['Nireeksha_AI_Engineer.pdf']);
-    expect(captured.attachments?.res).toEqual(['Nireeksha_AI_Engineer.pdf']);
+  it('leaves exactly one document flagged, and it is the wanted one', () => {
+    // The table starts with Resume already ticked on the wanted row and
+    // Relevant not — the state the live portal was actually observed in.
+    const rows = captured.attachRows ?? [];
+    expect(rows.find((r) => r.file === 'Nireeksha_AI_Engineer.pdf')).toEqual({
+      file: 'Nireeksha_AI_Engineer.pdf',
+      relevant: true,
+      resume: true,
+    });
+    expect(rows.filter((r) => r.relevant || r.resume)).toHaveLength(1);
   });
 
   it('stops on the review page in dry-run mode without submitting', async () => {
@@ -439,4 +523,65 @@ describe('a step whose answer is already correct', () => {
     expect(captured.consentLanguage).toBe('en');
     expect(result.outcome).toBe('submitted');
   }, 90_000);
+});
+
+describe('the attachments table posting back on every click', () => {
+  it('reaches the wanted end state one toggle at a time', async () => {
+    captured = { submitted: false, hits: [], attachRows: initialAttachments() };
+    const result = await createApplicator(config()).apply(job());
+
+    expect(result.outcome).toBe('submitted');
+    // Resume was already ticked on the wanted row, so only Relevant needed a
+    // click. A batched implementation would have lost it to the re-render.
+    const rows = captured.attachRows ?? [];
+    const chosen = rows.find((r) => r.file === 'Nireeksha_AI_Engineer.pdf');
+    expect(chosen).toEqual({
+      file: 'Nireeksha_AI_Engineer.pdf',
+      relevant: true,
+      resume: true,
+    });
+    expect(rows.filter((r) => r.relevant || r.resume)).toHaveLength(1);
+    expect(captured.toggles).toBe(1);
+  }, 120_000);
+
+  it('clears a different document that was left flagged', async () => {
+    captured = {
+      submitted: false,
+      hits: [],
+      attachRows: [
+        { file: 'Nireeksha_Huns_Resume_Dassault.pdf', relevant: true, resume: true },
+        { file: 'Nireeksha_AI_Engineer.pdf', relevant: false, resume: false },
+        { file: 'Nireeksha_Huns_Resume.pdf', relevant: false, resume: false },
+      ],
+    };
+    const result = await createApplicator(config()).apply(job());
+
+    expect(result.outcome).toBe('submitted');
+    const rows = captured.attachRows ?? [];
+    expect(rows.find((r) => r.file === 'Nireeksha_AI_Engineer.pdf')).toEqual({
+      file: 'Nireeksha_AI_Engineer.pdf',
+      relevant: true,
+      resume: true,
+    });
+    expect(rows.filter((r) => r.relevant || r.resume)).toHaveLength(1);
+    expect(captured.toggles).toBe(4); // two to clear, two to set
+  }, 120_000);
+});
+
+describe('the requisition guard', () => {
+  it('stops when the portal says the application is for another job', async () => {
+    // The portal resumes saved drafts, so the banner is the only confirmation
+    // that this application belongs to the job we picked.
+    captured = {
+      submitted: false,
+      hits: [],
+      attachRows: initialAttachments(),
+      bannerJob: '999999',
+    };
+    const result = await createApplicator(config()).apply(job());
+
+    expect(result.outcome).toBe('failed');
+    expect(result.reason).toMatch(/for job 999999, not 550021/);
+    expect(captured.submitted).toBe(false);
+  }, 120_000);
 });

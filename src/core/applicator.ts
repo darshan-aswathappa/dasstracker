@@ -18,7 +18,7 @@ import { resolve } from 'node:path';
 import type { Browser, Page } from 'playwright';
 import type { ApplicationProfile } from './profile.js';
 import { deriveApplyUrl } from './fetcher.js';
-import { identifyStep, reviewProblems, type FlowStep } from './review.js';
+import { identifyStep, reviewProblems, wrongJobNumber, type FlowStep } from './review.js';
 import type { Job } from './types.js';
 
 const DEFAULT_LOGIN_HOST = 'talentacquisition.3ds.com';
@@ -26,6 +26,8 @@ const DEFAULT_LOGIN_HOST = 'talentacquisition.3ds.com';
 const STEP_TIMEOUT_MS = 45_000;
 /** Hard bound on the flow, so an unexpected loop cannot run forever. */
 const MAX_STEPS = 12;
+/** Bound on attachment checkbox toggles: each one costs a page re-render. */
+const MAX_TOGGLES = 12;
 /** How long to wait for a step's post-back to navigate. */
 const NAV_TIMEOUT_MS = 20_000;
 
@@ -223,33 +225,89 @@ const FN_ANSWER = String.raw`(req) => {
   return hit.checked === target;
 }`;
 
-/** File names listed on the File Attachments step, in row order. */
-const FN_ATTACHMENT_NAMES = String.raw`() => {
-  return Array.prototype.slice.call(document.querySelectorAll('table tr'))
-    .map(function (tr) {
-      const link = tr.querySelector('a');
-      return link ? (link.textContent || '').trim() : '';
-    })
-    .filter(function (name) { return /\.(pdf|docx?|txt|rtf)$/i.test(name); });
+/**
+ * Read the attachments table: every file and the state of its two checkboxes.
+ *
+ * Columns are found from the header rather than by position, so a reordered
+ * table does not silently tick the wrong box.
+ */
+const FN_ATTACHMENT_STATE = String.raw`() => {
+  const norm = function (el) {
+    return ((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
+  };
+  const isFile = function (t) { return /\.(pdf|docx?|txt|rtf)$/i.test(t); };
+
+  const tables = Array.prototype.slice.call(document.querySelectorAll('table'));
+  for (let t = 0; t < tables.length; t++) {
+    const rows = Array.prototype.slice.call(tables[t].querySelectorAll('tr'));
+    let relIdx = -1, resIdx = -1, headerRow = -1;
+    for (let r = 0; r < rows.length && headerRow === -1; r++) {
+      const cells = Array.prototype.slice.call(rows[r].children);
+      for (let c = 0; c < cells.length; c++) {
+        const label = norm(cells[c]).toLowerCase();
+        if (/^relevant files?$/.test(label)) relIdx = c;
+        if (/^resume$/.test(label)) resIdx = c;
+      }
+      if (relIdx !== -1 && resIdx !== -1) headerRow = r;
+    }
+    if (headerRow === -1) continue;
+
+    const out = [];
+    for (let r = headerRow + 1; r < rows.length; r++) {
+      const cells = Array.prototype.slice.call(rows[r].children);
+      const link = rows[r].querySelector('a');
+      const file = norm(link);
+      if (!link || !isFile(file)) continue;
+      const rel = cells[relIdx] ? cells[relIdx].querySelector('input[type=checkbox]') : null;
+      const res = cells[resIdx] ? cells[resIdx].querySelector('input[type=checkbox]') : null;
+      if (!rel || !res) continue;
+      out.push({ file: file, relevant: rel.checked, resume: res.checked });
+    }
+    if (out.length > 0) return out;
+  }
+  return [];
 }`;
 
-/** Tick Relevant+Resume on the wanted row, clearing every other row. */
-const FN_SELECT_RESUME = String.raw`(wanted) => {
-  const rows = Array.prototype.slice.call(document.querySelectorAll('table tr'));
-  const row = rows.find(function (tr) {
-    const link = tr.querySelector('a');
-    return link && (link.textContent || '').trim() === wanted;
-  });
-  if (!row) return false;
-  const boxes = Array.prototype.slice.call(row.querySelectorAll('input[type=checkbox]'));
-  if (boxes.length === 0) return false;
-  boxes.forEach(function (b) { if (!b.checked) b.click(); });
-  rows.forEach(function (other) {
-    if (other === row || !other.querySelector('a')) return;
-    Array.prototype.slice.call(other.querySelectorAll('input[type=checkbox]'))
-      .forEach(function (b) { if (b.checked) b.click(); });
-  });
-  return boxes.every(function (b) { return b.checked; });
+/**
+ * Set ONE checkbox in the attachments table.
+ *
+ * Deliberately one at a time: ticking a box makes the portal post back and
+ * re-render the table, which throws away any other click made in the same
+ * pass. The caller re-reads the state and comes back for the next one.
+ */
+const FN_TOGGLE_ATTACHMENT = String.raw`(req) => {
+  const norm = function (el) {
+    return ((el && el.textContent) || '').replace(/\s+/g, ' ').trim();
+  };
+  const tables = Array.prototype.slice.call(document.querySelectorAll('table'));
+  for (let t = 0; t < tables.length; t++) {
+    const rows = Array.prototype.slice.call(tables[t].querySelectorAll('tr'));
+    let relIdx = -1, resIdx = -1, headerRow = -1;
+    for (let r = 0; r < rows.length && headerRow === -1; r++) {
+      const cells = Array.prototype.slice.call(rows[r].children);
+      for (let c = 0; c < cells.length; c++) {
+        const label = norm(cells[c]).toLowerCase();
+        if (/^relevant files?$/.test(label)) relIdx = c;
+        if (/^resume$/.test(label)) resIdx = c;
+      }
+      if (relIdx !== -1 && resIdx !== -1) headerRow = r;
+    }
+    if (headerRow === -1) continue;
+
+    for (let r = headerRow + 1; r < rows.length; r++) {
+      const link = rows[r].querySelector('a');
+      if (!link || norm(link) !== req.file) continue;
+      const cells = Array.prototype.slice.call(rows[r].children);
+      const cell = req.column === 'relevant' ? cells[relIdx] : cells[resIdx];
+      const box = cell ? cell.querySelector('input[type=checkbox]') : null;
+      if (!box) return false;
+      if (box.checked === req.desired) return true;
+      // Deferred: the click can post back and destroy this context.
+      setTimeout(function () { box.click(); }, 0);
+      return true;
+    }
+  }
+  return false;
 }`;
 
 /**
@@ -423,11 +481,20 @@ const setCheckbox = (
   checked: boolean,
 ): Promise<boolean> => answerQuestion(page, { question, kind: 'checkbox', option, checked });
 
-const attachmentNames = (page: Page): Promise<string[]> =>
-  callInPage<string[]>(page, FN_ATTACHMENT_NAMES, undefined, []);
+/** One row of the attachments table. */
+interface AttachmentRow {
+  file: string;
+  relevant: boolean;
+  resume: boolean;
+}
 
-const selectResumeRow = (page: Page, fileName: string): Promise<boolean> =>
-  callInPage<boolean>(page, FN_SELECT_RESUME, fileName, true);
+const attachmentState = (page: Page): Promise<AttachmentRow[]> =>
+  callInPage<AttachmentRow[]>(page, FN_ATTACHMENT_STATE, undefined, []);
+
+const toggleAttachment = (
+  page: Page,
+  request: { file: string; column: 'relevant' | 'resume'; desired: boolean },
+): Promise<boolean> => callInPage<boolean>(page, FN_TOGGLE_ATTACHMENT, request, true);
 
 /** Returns the label of whatever was clicked, or null if no banner was up. */
 const dismissCookieBanner = (page: Page): Promise<string | null> =>
@@ -594,6 +661,16 @@ export function createApplicator(
           return await fail('the portal presented a CAPTCHA or bot check; finish this one by hand');
         }
 
+        // The portal names the requisition on every step after sign-in. It
+        // also resumes saved drafts, so this is the one check that the
+        // application in front of us belongs to the job we chose.
+        const otherJob = wrongJobNumber(body, job.cardId);
+        if (otherJob) {
+          return await fail(
+            `the portal says this application is for job ${otherJob}, not ${job.cardId}`,
+          );
+        }
+
         const step = identifyStep(title, body);
         visited.push(step);
         await shoot(`${String(hop).padStart(2, '0')}-${step}`);
@@ -707,17 +784,63 @@ export function createApplicator(
           }
 
           case 'attachments': {
-            const names = await attachmentNames(page);
-            if (findResumeRow(names, p.resumeFileName) === -1) {
+            const rows = await attachmentState(page);
+            if (findResumeRow(rows.map((r) => r.file), p.resumeFileName) === -1) {
               return await fail(
                 `resume "${p.resumeFileName}" is not on the account; found: ${
-                  names.join(', ') || 'none'
+                  rows.map((r) => r.file).join(', ') || 'none'
                 }`,
               );
             }
-            if (!(await selectResumeRow(page, p.resumeFileName))) {
-              return await fail(`could not tick Relevant/Resume for ${p.resumeFileName}`);
+
+            // Exactly one file carries both ticks. Toggling one box makes the
+            // portal re-render the table, so do one, let it settle, re-read,
+            // and come back for the next rather than batching them.
+            const wantedState = (file: string) => file === p.resumeFileName;
+            let settled = false;
+            for (let t = 0; t < MAX_TOGGLES && !settled; t++) {
+              const current = await attachmentState(page);
+              const wrong = current.find(
+                (r) =>
+                  r.relevant !== wantedState(r.file) || r.resume !== wantedState(r.file),
+              );
+              if (!wrong) {
+                settled = true;
+                break;
+              }
+              const desired = wantedState(wrong.file);
+              const column = wrong.relevant !== desired ? 'relevant' : 'resume';
+              if (!(await toggleAttachment(page, { file: wrong.file, column, desired }))) {
+                return await fail(
+                  `could not set the ${column} box for ${wrong.file} on the attachments step`,
+                );
+              }
+              await page
+                .waitForLoadState('networkidle', { timeout: STEP_TIMEOUT_MS })
+                .catch(() => {});
+              await page.waitForTimeout(400);
             }
+
+            const finalRows = await attachmentState(page);
+            const chosen = finalRows.find((r) => r.file === p.resumeFileName);
+            if (!chosen?.relevant || !chosen?.resume) {
+              return await fail(
+                `could not tick Relevant and Resume for ${p.resumeFileName}; the table reads: ` +
+                  finalRows
+                    .map((r) => `${r.file}[rel=${r.relevant}, res=${r.resume}]`)
+                    .join(' | '),
+              );
+            }
+            const extra = finalRows.filter(
+              (r) => r.file !== p.resumeFileName && (r.relevant || r.resume),
+            );
+            if (extra.length > 0) {
+              return await fail(
+                `another document is still flagged: ${extra.map((r) => r.file).join(', ')}`,
+              );
+            }
+
+            await shoot('04b-attachments-set');
             const stopped = await advance(CONTINUE, 'Continue');
             if (stopped) return stopped;
             break;

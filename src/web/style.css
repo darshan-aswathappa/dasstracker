@@ -139,6 +139,16 @@ button:disabled { opacity: 0.4; cursor: default; }
   border-radius: 2px;
 }
 
+/* Entry level is the one thing worth spotting at a glance, so it gets the
+   accent colour rather than the muted hairline the other badges use. */
+.badge.entry {
+  color: var(--amber);
+  border-color: var(--amber);
+  font-weight: 600;
+}
+
+.job-meta .exp { color: var(--dim); }
+
 .empty {
   color: var(--dim);
   padding: 30px 20px;

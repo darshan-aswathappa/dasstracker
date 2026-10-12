@@ -55,8 +55,11 @@ async function loadJobs() {
 }
 
 function renderJob(j) {
-  const notified = j.notifiedAt
-    ? '<span class="badge">NOTIFIED</span>'
+  const notified = j.notifiedAt ? '<span class="badge">NOTIFIED</span>' : '';
+  // Only entry level earns a badge; everything else just shows its band.
+  const entry = j.entryLevel === true ? '<span class="badge entry">ENTRY LEVEL</span>' : '';
+  const experience = j.experience
+    ? `<span class="exp">${esc(j.experience)}</span>`
     : '';
   return `
     <div class="job ${j.matched ? 'matched' : ''}">
@@ -65,11 +68,13 @@ function renderJob(j) {
         <span>${esc(j.location || 'n/a')}</span>
         <span class="cat">${esc(j.category || 'n/a')}</span>
         ${j.products ? `<span>${esc(j.products)}</span>` : ''}
+        ${experience}
         <span>posted ${esc(fmt(j.postedAt))}</span>
         <span>seen ${esc(relative(j.firstSeenAt))}</span>
       </div>
       <div class="job-foot">
         ${j.applyUrl ? `<a href="${esc(j.applyUrl)}" target="_blank" rel="noopener">Apply →</a>` : ''}
+        ${entry}
         ${notified}
       </div>
     </div>`;
@@ -90,13 +95,20 @@ async function loadStatus() {
     const wa = s.whatsappConfigured
       ? '<span class="ok">wa ✓</span>'
       : '<span class="err">wa off</span>';
-    bar.innerHTML = `${lastTxt}${nextTxt} · <b>${s.totalJobs}</b> tracked · every ${s.intervalMinutes}m · ${mail} · ${wa}`;
+    const c = s.classification || {};
+    const entry = s.jevConfigured
+      ? ` · <b>${c.entry ?? 0}</b> entry level${c.pending ? ` (${c.pending} unclassified)` : ''}`
+      : '';
+    bar.innerHTML = `${lastTxt}${nextTxt} · <b>${s.totalJobs}</b> tracked${entry} · every ${s.intervalMinutes}m · ${mail} · ${wa}`;
     $('emailState').innerHTML = s.emailConfigured
       ? '● SMTP configured'
       : '○ email not configured — set GMAIL_USER / GMAIL_APP_PASSWORD in .env';
     $('whatsappState').innerHTML = s.whatsappConfigured
       ? '● WhatsApp (CallMeBot) configured'
       : '○ WhatsApp not configured — set CALLMEBOT_PHONE / CALLMEBOT_APIKEY in .env';
+    $('jevState').innerHTML = s.jevConfigured
+      ? '● Jev entry-level screening on (0–3 years)'
+      : '○ Jev not configured — set OPENROUTER_API_KEY in .env';
   } catch (err) {
     bar.innerHTML = `<span class="err">status error: ${esc(err.message)}</span>`;
   }

@@ -67,6 +67,8 @@ export function registerRoutes(
       intervalMinutes: ctx.getConfig().intervalMinutes,
       emailConfigured: notifier.configured,
       whatsappConfigured: ctx.buildWhatsApp().configured,
+      jevConfigured: ctx.buildJev().configured,
+      classification: ctx.store.classificationCounts(),
     };
   });
 
@@ -91,10 +93,13 @@ export function registerRoutes(
           location: 'Test',
           category: 'Information Technology',
           products: '',
+          experience: '0 to 3 years',
           postedAt: new Date().toISOString(),
           firstSeenAt: new Date().toISOString(),
           matched: true,
           notifiedAt: null,
+          entryLevel: true,
+          classifiedAt: new Date().toISOString(),
         },
       ]);
       reply.send({ ok: true });

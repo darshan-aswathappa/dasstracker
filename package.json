@@ -12,7 +12,8 @@
     "dev": "tsx watch src/server/index.ts",
     "scan-once": "tsx scripts/scan-once.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "backfill": "tsx scripts/backfill-experience.ts"
   },
   "dependencies": {
     "@fastify/static": "^7.0.4",

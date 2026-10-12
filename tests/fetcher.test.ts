@@ -68,6 +68,33 @@ describe('parseHit', () => {
     expect(parseHit({ metas: [] })).toBeNull();
     expect(parseHit({ metas: [{ name: 'card_id', value: '9' }] })).toBeNull();
   });
+
+  it('reads the experience band out of the Year/ segment', () => {
+    const job = parseHit({
+      metas: [
+        { name: 'card_id', value: '1' },
+        { name: 'content_title', value: 'Engineer' },
+        {
+          name: 'content_categories',
+          value:
+            'Category/Research & Development Type/Regular Country/United States ' +
+            'City/United States, CA, San Diego Products/BIOVIA Year/0 to 3 years',
+        },
+      ],
+    });
+    expect(job?.experience).toBe('0 to 3 years');
+  });
+
+  it('leaves experience blank when the posting has no Year/ segment', () => {
+    const job = parseHit({
+      metas: [
+        { name: 'card_id', value: '1' },
+        { name: 'content_title', value: 'Engineer' },
+        { name: 'content_categories', value: 'Category/Sales Type/Regular' },
+      ],
+    });
+    expect(job?.experience).toBe('');
+  });
 });
 
 describe('fetchJobs (mocked transport)', () => {

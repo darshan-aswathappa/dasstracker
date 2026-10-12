@@ -37,7 +37,10 @@ export class Store {
         posted_at     TEXT,
         first_seen_at TEXT NOT NULL,
         matched       INTEGER NOT NULL DEFAULT 0,
-        notified_at   TEXT
+        notified_at   TEXT,
+        experience    TEXT NOT NULL DEFAULT '',
+        entry_level   INTEGER,
+        classified_at TEXT
       );
 
       CREATE TABLE IF NOT EXISTS scans (
@@ -57,6 +60,31 @@ export class Store {
 
       CREATE INDEX IF NOT EXISTS idx_jobs_first_seen ON jobs(first_seen_at DESC);
     `);
+    this.addMissingJobColumns();
+  }
+
+  /**
+   * Bring a jobs table created before experience tracking up to date.
+   * CREATE TABLE IF NOT EXISTS leaves an existing table alone, so columns added
+   * later have to be ALTERed in. Done by inspection rather than by catching an
+   * error, so a genuine failure still surfaces.
+   */
+  private addMissingJobColumns(): void {
+    const existing = new Set(
+      (this.db.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>).map(
+        (c) => c.name,
+      ),
+    );
+    const additions: Array<[string, string]> = [
+      ['experience', "TEXT NOT NULL DEFAULT ''"],
+      ['entry_level', 'INTEGER'],
+      ['classified_at', 'TEXT'],
+    ];
+    for (const [name, decl] of additions) {
+      if (!existing.has(name)) {
+        this.db.exec(`ALTER TABLE jobs ADD COLUMN ${name} ${decl}`);
+      }
+    }
   }
 
   /** True if a job with this card_id already exists. */
@@ -86,8 +114,8 @@ export class Store {
       .prepare(
         `INSERT OR IGNORE INTO jobs
            (card_id, title, url, apply_url, location, category, products,
-            posted_at, first_seen_at, matched, notified_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+            posted_at, first_seen_at, matched, notified_at, experience)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       )
       .run(
         job.cardId,
@@ -100,6 +128,7 @@ export class Store {
         job.postedAt,
         firstSeenAt,
         matched ? 1 : 0,
+        job.experience ?? '',
       );
     return result.changes > 0;
   }
@@ -175,6 +204,69 @@ export class Store {
     return this.recentScans(1)[0] ?? null;
   }
 
+  // --- Entry-level classification ---
+
+  /**
+   * Jobs waiting on a verdict: they state an experience band and have never
+   * been asked about. Jobs without a band are left out — there is nothing for
+   * the model to read, so asking would only cost a call.
+   */
+  jobsNeedingClassification(limit = 500): StoredJob[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM jobs
+         WHERE classified_at IS NULL AND experience <> ''
+         ORDER BY first_seen_at DESC LIMIT ?`,
+      )
+      .all(limit);
+    return rows.map(rowToJob);
+  }
+
+  /** Jobs with no experience band yet, oldest first — backfill candidates. */
+  jobsMissingExperience(limit = 1000): StoredJob[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM jobs WHERE experience = '' ORDER BY first_seen_at DESC LIMIT ?`)
+      .all(limit);
+    return rows.map(rowToJob);
+  }
+
+  /**
+   * Record a verdict. `entryLevel` is tri-state: true (0-3 years), false
+   * (more), or null (Jev could not decide). `classifiedAt` is set either way,
+   * so an undecided job is not asked about again on every scan.
+   */
+  setClassification(cardId: string, entryLevel: boolean | null, classifiedAt: string): void {
+    this.db
+      .prepare('UPDATE jobs SET entry_level = ?, classified_at = ? WHERE card_id = ?')
+      .run(entryLevel === null ? null : entryLevel ? 1 : 0, classifiedAt, cardId);
+  }
+
+  /** Attach an experience band to a job stored before the field existed. */
+  setExperience(cardId: string, experience: string): void {
+    this.db.prepare('UPDATE jobs SET experience = ? WHERE card_id = ?').run(experience, cardId);
+  }
+
+  /** Count of jobs per verdict, for status reporting. */
+  classificationCounts(): { entry: number; senior: number; undecided: number; pending: number } {
+    const row = this.db
+      .prepare(
+        `SELECT
+           SUM(CASE WHEN entry_level = 1 THEN 1 ELSE 0 END) AS entry,
+           SUM(CASE WHEN entry_level = 0 THEN 1 ELSE 0 END) AS senior,
+           SUM(CASE WHEN classified_at IS NOT NULL AND entry_level IS NULL THEN 1 ELSE 0 END)
+             AS undecided,
+           SUM(CASE WHEN classified_at IS NULL THEN 1 ELSE 0 END) AS pending
+         FROM jobs`,
+      )
+      .get() as Record<string, number | null>;
+    return {
+      entry: row.entry ?? 0,
+      senior: row.senior ?? 0,
+      undecided: row.undecided ?? 0,
+      pending: row.pending ?? 0,
+    };
+  }
+
   // --- Settings (UI-editable config; secrets stay in env) ---
 
   getSetting(key: string): string | null {
@@ -229,9 +321,12 @@ function rowToJob(row: unknown): StoredJob {
     location: (r.location as string) ?? '',
     category: (r.category as string) ?? '',
     products: (r.products as string) ?? '',
+    experience: (r.experience as string) ?? '',
     postedAt: (r.posted_at as string) ?? '',
     firstSeenAt: r.first_seen_at as string,
     matched: (r.matched as number) === 1,
     notifiedAt: (r.notified_at as string | null) ?? null,
+    entryLevel: r.entry_level == null ? null : (r.entry_level as number) === 1,
+    classifiedAt: (r.classified_at as string | null) ?? null,
   };
 }

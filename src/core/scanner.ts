@@ -11,6 +11,8 @@
 import { fetchJobs, type FetchQuery } from './fetcher.js';
 import { matchJob } from './matcher.js';
 import type { Store } from './store.js';
+import { classifyPendingJobs } from './classify.js';
+import type { JevClassifier } from './jev.js';
 import type { Notifier } from './notifier.js';
 import type { WhatsAppNotifier } from './whatsapp.js';
 import type { ScanResult, TrackerConfig } from './types.js';
@@ -20,6 +22,8 @@ export interface ScanDeps {
   notifier: Notifier;
   /** Optional WhatsApp channel; digests fan out to it alongside email. */
   whatsapp?: WhatsAppNotifier;
+  /** Optional entry-level classifier; when absent, jobs stay unclassified. */
+  jev?: JevClassifier;
   config: TrackerConfig;
   fetchImpl?: typeof fetch;
   now?: () => Date;
@@ -28,7 +32,7 @@ export interface ScanDeps {
 
 /** Run a single scan cycle and return its result (also persisted). */
 export async function runScan(deps: ScanDeps): Promise<ScanResult> {
-  const { store, notifier, whatsapp, config } = deps;
+  const { store, notifier, whatsapp, jev, config } = deps;
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? (() => {});
   const startedAt = now().toISOString();
@@ -73,6 +77,12 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
       }
     }
     result.matchedCount = newMatched;
+
+    // Badge the new arrivals before any digest goes out. Best-effort by
+    // design: a Jev outage leaves jobs unbadged but must not stall a scan.
+    if (jev) {
+      await classifyPendingJobs(store, jev, () => now().toISOString(), log);
+    }
 
     if (isBaseline) {
       // Baseline seed: mark all matched jobs as already-notified so they never

@@ -14,6 +14,7 @@ import {
   whatsappConfigFromEnv,
   type WhatsAppNotifier,
 } from '../core/whatsapp.js';
+import { createJevClassifier, jevConfigFromEnv, type JevClassifier } from '../core/jev.js';
 import { runScan } from '../core/scanner.js';
 import type { ScanResult, TrackerConfig } from '../core/types.js';
 
@@ -23,6 +24,7 @@ export interface AppContext {
   setConfig(next: TrackerConfig): void;
   buildNotifier(): Notifier;
   buildWhatsApp(): WhatsAppNotifier;
+  buildJev(): JevClassifier;
   scan(): Promise<ScanResult>;
   log(msg: string): void;
 }
@@ -50,14 +52,17 @@ export function createApp(env: NodeJS.ProcessEnv = process.env): AppContext {
   const buildWhatsApp = (): WhatsAppNotifier =>
     createWhatsAppNotifier(whatsappConfigFromEnv(env), fetch, log);
 
+  const buildJev = (): JevClassifier => createJevClassifier(jevConfigFromEnv(env));
+
   const scan = (): Promise<ScanResult> =>
     runScan({
       store,
       notifier: buildNotifier(),
       whatsapp: buildWhatsApp(),
+      jev: buildJev(),
       config: getConfig(),
       log,
     });
 
-  return { store, getConfig, setConfig, buildNotifier, buildWhatsApp, scan, log };
+  return { store, getConfig, setConfig, buildNotifier, buildWhatsApp, buildJev, scan, log };
 }

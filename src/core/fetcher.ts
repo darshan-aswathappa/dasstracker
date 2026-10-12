@@ -95,6 +95,7 @@ export function parseHit(hit: { metas?: Array<{ name: string; value: unknown }> 
       extractCategoryField(categories, 'City'),
     category: extractCategoryField(categories, 'Category'),
     products: extractCategoryField(categories, 'Products'),
+    experience: extractCategoryField(categories, 'Year'),
     postedAt: parseTimestamp(metaValue(metas, 'content_start_datetime')),
   };
 }

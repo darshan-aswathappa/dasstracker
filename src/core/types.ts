@@ -11,6 +11,8 @@ export interface Job {
   location: string;
   category: string;
   products: string;
+  /** Experience band as 3DS states it, e.g. "0 to 3 years". '' when absent. */
+  experience: string;
   postedAt: string; // ISO-8601 string
 }
 
@@ -19,6 +21,10 @@ export interface StoredJob extends Job {
   firstSeenAt: string; // ISO-8601
   matched: boolean;
   notifiedAt: string | null; // ISO-8601 or null
+  /** Jev's verdict: true = 0-3 years, false = more, null = undecided. */
+  entryLevel: boolean | null;
+  /** When Jev last ruled on this job; null means it has never been asked. */
+  classifiedAt: string | null; // ISO-8601 or null
 }
 
 /** User-editable configuration (persisted in the settings table). */

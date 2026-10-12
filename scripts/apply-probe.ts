@@ -24,15 +24,19 @@ async function main() {
   const ctx = createApp();
   const { store, log } = ctx;
   const wanted = process.argv[2];
+  // A full URL probes exactly that link; a bare id probes that stored job.
+  const asUrl = wanted && /^https?:\/\//i.test(wanted) ? wanted : null;
+  const cardId = asUrl ? (new URL(asUrl).searchParams.get('job') ?? '') : wanted;
 
-  const job = wanted
-    ? store.recentJobs(500).find((j) => j.cardId === wanted)
+  const found = cardId
+    ? store.recentJobs(500).find((j) => j.cardId === cardId)
     : store.recentJobs(500).find((j) => j.entryLevel === true && j.matched);
+  const job = found && asUrl ? { ...found, applyUrl: asUrl } : found;
 
   if (!job) {
     console.error(
-      wanted
-        ? `No stored job with card id ${wanted}.`
+      cardId
+        ? `No stored job with card id ${cardId}.`
         : 'No entry-level matched job in the database to probe.',
     );
     process.exit(1);

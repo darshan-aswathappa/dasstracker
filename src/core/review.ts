@@ -98,6 +98,7 @@ export function reviewProblems(pageText: string, profile: ApplicationProfile): s
 /** The step a page represents, identified from its title and content. */
 export type FlowStep =
   | 'login'
+  | 'privacy'
   | 'personal'
   | 'diversity'
   | 'attachments'
@@ -117,6 +118,7 @@ export function identifyStep(title: string, bodyText: string): FlowStep {
   const body = flatten(bodyText).toLowerCase();
 
   if (/thank you/.test(t) || /process completed/.test(body)) return 'thankyou';
+  if (/privacy agreement/.test(t)) return 'privacy';
   if (/review and submit/.test(t)) return 'review';
   if (/file attachments/.test(t)) return 'attachments';
   if (/diversity/.test(t)) return 'diversity';
@@ -124,6 +126,7 @@ export function identifyStep(title: string, bodyText: string): FlowStep {
   if (/login|sign in/.test(t)) return 'login';
 
   // Titles can be generic mid-redirect; fall back to what the page says.
+  if (/please accept or decline our privacy agreement/.test(body)) return 'privacy';
   if (/will be submitted after you click the submit button/.test(body)) return 'review';
   if (/please attach your resume/.test(body)) return 'attachments';
   if (/veterans invitation to self identify/.test(body)) return 'diversity';

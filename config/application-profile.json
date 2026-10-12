@@ -6,6 +6,10 @@
   "jobPostingNotification": false,
   "gender": "Female",
   "veteranStatus": "Not a Protected Veteran",
-  "race": ["Asian"],
-  "resumeFileName": "Nireeksha_AI_Engineer.pdf"
+  "race": [
+    "Asian"
+  ],
+  "resumeFileName": "Nireeksha_AI_Engineer.pdf",
+  "acceptPrivacyAgreement": true,
+  "privacyLanguage": "English"
 }

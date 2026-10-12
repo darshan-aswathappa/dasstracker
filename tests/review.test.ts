@@ -128,3 +128,19 @@ describe('answers that a substring check would confuse', () => {
     expect(reviewProblems(text, profile).join(' ')).toMatch(/gender/);
   });
 });
+
+describe('the privacy agreement step', () => {
+  it('is recognised by its title', () => {
+    expect(identifyStep('Privacy Agreement', '')).toBe('privacy');
+  });
+
+  it('is recognised by its text when the title is generic', () => {
+    expect(
+      identifyStep(
+        'My Jobpage',
+        'Before sending your application to Dassault Systemes Talent acquisition Team, ' +
+          'please accept or decline our Privacy Agreement.',
+      ),
+    ).toBe('privacy');
+  });
+});

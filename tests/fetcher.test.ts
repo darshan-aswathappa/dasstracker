@@ -7,6 +7,7 @@ import {
   parseResponse,
   parseTimestamp,
   parseHit,
+  deriveApplyUrl,
   fetchJobs,
 } from '../src/core/fetcher.js';
 
@@ -130,5 +131,41 @@ describe('fetchJobs (mocked transport)', () => {
     const jobs = await fetchJobs(query, { pageSize: 1000, maxPages: 2, fetchImpl });
     const ids = new Set(jobs.map((j) => j.cardId));
     expect(ids.size).toBe(jobs.length);
+  });
+});
+
+describe('deriveApplyUrl', () => {
+  it('builds the careers-site apply link for a requisition', () => {
+    const url = deriveApplyUrl('550029');
+    expect(url).toBe(
+      'https://talentacquisition.3ds.com/careersection/ca/jobapply.ftl?job=550029&lang=en&src=CWS-10080',
+    );
+  });
+
+  it('is used when the API returns no Apply CTA', () => {
+    // Roughly one posting in twenty arrives without one; 550029 was such a job.
+    const job = parseHit({
+      metas: [
+        { name: 'card_id', value: '550029' },
+        { name: 'content_title', value: 'AI QA Engineer' },
+      ],
+    });
+    expect(job?.applyUrl).toContain('job=550029');
+  });
+
+  it('prefers the API own Apply link when there is one', () => {
+    const job = parseHit({
+      metas: [
+        { name: 'card_id', value: '549646' },
+        { name: 'content_title', value: 'AI Engineer' },
+        {
+          name: 'content_cta_2_url',
+          value: 'https://talentacquisition.3ds.com/careersection/qa/jobapply.ftl?job=549646&lang=en',
+        },
+      ],
+    });
+    expect(job?.applyUrl).toBe(
+      'https://talentacquisition.3ds.com/careersection/qa/jobapply.ftl?job=549646&lang=en',
+    );
   });
 });

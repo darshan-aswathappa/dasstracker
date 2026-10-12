@@ -17,6 +17,7 @@ import { chmodSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Browser, Page } from 'playwright';
 import type { ApplicationProfile } from './profile.js';
+import { deriveApplyUrl } from './fetcher.js';
 import { identifyStep, reviewProblems, type FlowStep } from './review.js';
 import type { Job } from './types.js';
 
@@ -249,28 +250,45 @@ const FN_SELECT_RESUME = String.raw`(wanted) => {
  * never "Accept All".
  */
 const FN_DISMISS_COOKIES = String.raw`() => {
+  const norm = function (el) {
+    return ((el.textContent || el.value || '') + '').replace(/\s+/g, ' ').trim();
+  };
+  const visible = function (el) {
+    return el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0;
+  };
+  const CLICKABLE = 'a,button,input[type=button],input[type=submit],[role=button]';
+
+  // Find the banner itself before clicking anything inside it. Searching the
+  // whole page for a "decline"-ish label is how an automation ends up pressing
+  // "I DECLINE" on a privacy agreement, which is a different question entirely.
+  const containers = Array.prototype.slice
+    .call(document.querySelectorAll('div,section,aside,dialog,form'))
+    .filter(function (el) {
+      if (!visible(el)) return false;
+      if (!/\bcookies?\b/i.test(norm(el))) return false;
+      return el.querySelectorAll(CLICKABLE).length > 0;
+    });
+  if (containers.length === 0) return null;
+
+  // The smallest matching container is the banner, not the page wrapping it.
+  const banner = containers.reduce(function (a, b) {
+    return norm(a).length <= norm(b).length ? a : b;
+  });
+
+  // Most private first. These are only ever matched inside the cookie banner.
   const wanted = [
     /continue with only necessary cookies/i,
     /only necessary/i,
     /reject all/i,
-    /decline/i,
+    /^\s*decline\b/i,
   ];
-  // A consent banner is usually position:fixed, and a fixed element's
-  // offsetParent is null — so visibility must be judged by its box, not by
-  // offsetParent, or the one element we are looking for is filtered out.
-  const visible = function (el) {
-    return el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0;
-  };
-  const clickable = Array.prototype.slice.call(
-    document.querySelectorAll('a,button,input[type=button],input[type=submit],[role=button]')
-  );
+  const clickable = Array.prototype.slice.call(banner.querySelectorAll(CLICKABLE));
   for (let i = 0; i < wanted.length; i++) {
     const hit = clickable.find(function (el) {
-      const label = (el.textContent || el.value || '').replace(/\s+/g, ' ').trim();
-      return wanted[i].test(label) && visible(el);
+      return wanted[i].test(norm(el)) && visible(el);
     });
     if (hit) {
-      const label = (hit.textContent || hit.value || '').replace(/\s+/g, ' ').trim();
+      const label = norm(hit);
       hit.click();
       return label;
     }
@@ -394,17 +412,22 @@ export function createApplicator(
     };
 
     try {
-      if (!job.applyUrl) return await fail('job has no apply URL');
+      // About one posting in twenty arrives with no Apply CTA; the link is
+      // derivable from the requisition id, so a missing one is not a dead end.
+      const applyUrl = job.applyUrl || deriveApplyUrl(job.cardId);
+      if (!job.applyUrl) {
+        log(`[apply ${job.cardId}] no apply URL stored; using ${redactUrl(applyUrl)}`);
+      }
 
       // Vet the URL before the browser ever opens it: the credentials are
       // typed into whatever this loads, so an unexpected host is a hard stop.
-      if (!isExpectedHost(job.applyUrl, config!.loginHost)) {
+      if (!isExpectedHost(applyUrl, config!.loginHost)) {
         return await fail(
           `apply URL host is not ${config!.loginHost}, refusing to sign in: ` +
-            redactUrl(job.applyUrl),
+            redactUrl(applyUrl),
         );
       }
-      await page.goto(job.applyUrl, { waitUntil: 'domcontentloaded' });
+      await page.goto(applyUrl, { waitUntil: 'domcontentloaded' });
       if (!isExpectedHost(page.url(), config!.loginHost)) {
         return await fail(
           `apply URL redirected off ${config!.loginHost}, refusing to sign in: ` +
@@ -475,6 +498,27 @@ export function createApplicator(
             await passwordField.fill(config!.password);
             await clickAndSettle(page, /log ?in|sign ?in/i);
             signedIn = true;
+            break;
+          }
+
+          case 'privacy': {
+            // This consent gates the entire application, so it is read from
+            // the profile rather than assumed, and a false value stops here
+            // instead of clicking Decline on the candidate's behalf.
+            if (!p.acceptPrivacyAgreement) {
+              return await fail(
+                'the portal requires accepting its Privacy Agreement and the profile ' +
+                  'does not accept it; finish this one by hand',
+              );
+            }
+            await chooseSelect(page, 'Select your preferred language', p.privacyLanguage);
+            const accept = page.getByRole('button', { name: /^\s*I ACCEPT\s*$/i }).first();
+            if ((await accept.count()) === 0) {
+              return await fail('privacy agreement page has no I ACCEPT button');
+            }
+            log(`[apply ${job.cardId}] accepting the privacy agreement`);
+            await accept.click({ timeout: STEP_TIMEOUT_MS });
+            await page.waitForLoadState('networkidle', { timeout: STEP_TIMEOUT_MS }).catch(() => {});
             break;
           }
 

@@ -42,6 +42,11 @@ interface Captured {
   detourHost?: string;
   /** Credentials posted to the detour host, if the guard ever failed. */
   leaked?: Record<string, string>;
+  /** When set, a Privacy Agreement gate stands before Personal Information. */
+  privacyGate?: boolean;
+  /** Which privacy button was pressed, and the language chosen with it. */
+  consent?: string;
+  consentLanguage?: string;
 }
 
 let server: Server;
@@ -116,7 +121,14 @@ beforeAll(async () => {
       if (url.pathname.includes('jobapply.ftl')) return send(page('login.html'));
       if (url.pathname.includes('application.jss')) {
         const f = parseBody(body);
+        if (f.consent) {
+          captured.consent = f.consent[0];
+          captured.consentLanguage = f.lang?.[0] ?? '';
+          return send(page('step1.html'));
+        }
         captured.login = { user: f.user?.[0] ?? '', pass: f.pass?.[0] ?? '' };
+        // The portal gates the application behind a privacy agreement.
+        if (captured.privacyGate) return send(page('privacy.html'));
         // A mid-application hop onto another host, showing a sign-in page.
         if (captured.detourHost) {
           res.writeHead(302, { Location: `${captured.detourHost}/elsewhere/login` });
@@ -350,6 +362,30 @@ describe('a flow that wanders off the portal', () => {
     expect(result.reason).toMatch(/left 127\.0\.0\.1 mid-application|refusing to enter/i);
     // The decisive assertion: the real password was never posted off-host.
     expect(captured.leaked).toBeUndefined();
+    expect(captured.submitted).toBe(false);
+  }, 90_000);
+});
+
+describe('the privacy agreement gate', () => {
+  it('accepts it and carries on into the application', async () => {
+    captured = { submitted: false, hits: [], privacyGate: true };
+    const result = await createApplicator(config()).apply(job());
+
+    expect(captured.consent).toBe('accept');
+    expect(captured.consentLanguage).toBe('en'); // "English"
+    expect(result.outcome).toBe('submitted');
+    expect(captured.submitted).toBe(true);
+  }, 90_000);
+
+  it('stops without clicking anything when the profile does not accept it', async () => {
+    captured = { submitted: false, hits: [], privacyGate: true };
+    const profile = { ...loadApplicationProfile(), acceptPrivacyAgreement: false };
+    const result = await createApplicator(config({ profile })).apply(job());
+
+    expect(result.outcome).toBe('failed');
+    expect(result.reason).toMatch(/privacy agreement/i);
+    // Neither accepted nor declined on the candidate's behalf.
+    expect(captured.consent).toBeUndefined();
     expect(captured.submitted).toBe(false);
   }, 90_000);
 });

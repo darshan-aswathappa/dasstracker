@@ -30,6 +30,15 @@ export interface ApplicationProfile {
   race: string[];
   /** Exact file name, as listed on the account's File Attachments step. */
   resumeFileName: string;
+  /**
+   * Whether to accept the portal's Privacy Agreement, which gates the whole
+   * application ("if you decline, Dassault Systemes will not be able to
+   * process your employment application"). Kept here, rather than assumed in
+   * code, so the consent being given on the candidate's behalf is visible.
+   */
+  acceptPrivacyAgreement: boolean;
+  /** Language to select on that page. */
+  privacyLanguage: string;
 }
 
 const YES_NO: readonly string[] = ['Yes', 'No', 'Not Specified'];
@@ -72,6 +81,11 @@ export function parseApplicationProfile(input: unknown): ApplicationProfile {
     veteranStatus: requireString(raw, 'veteranStatus'),
     race: (race as string[]).map((r) => r.trim()),
     resumeFileName: requireString(raw, 'resumeFileName'),
+    acceptPrivacyAgreement: raw.acceptPrivacyAgreement === true,
+    privacyLanguage:
+      typeof raw.privacyLanguage === 'string' && raw.privacyLanguage.trim()
+        ? raw.privacyLanguage.trim()
+        : 'English',
   };
 }
 

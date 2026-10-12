@@ -10,6 +10,8 @@
 import type { Job } from './types.js';
 
 const API_BASE = 'https://www.3ds.com/apisearch/card_search_api';
+/** Career section that serves an apply flow for any requisition id. */
+const APPLY_BASE = 'https://talentacquisition.3ds.com/careersection/ca/jobapply.ftl';
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
@@ -76,6 +78,15 @@ function extractCategoryField(categories: string, label: string): string {
   return m ? m[1].trim() : '';
 }
 
+/**
+ * The apply link for a requisition, for the roughly one posting in twenty
+ * where the search API returns no Apply CTA at all. The pattern is the one the
+ * careers site itself produces, with its source tag.
+ */
+export function deriveApplyUrl(cardId: string): string {
+  return `${APPLY_BASE}?job=${encodeURIComponent(cardId)}&lang=en&src=CWS-10080`;
+}
+
 /** Map a single raw API hit into a normalized Job. */
 export function parseHit(hit: { metas?: Array<{ name: string; value: unknown }> }): Job | null {
   const metas = hit.metas ?? [];
@@ -89,7 +100,7 @@ export function parseHit(hit: { metas?: Array<{ name: string; value: unknown }> 
     cardId,
     title,
     url: metaValue(metas, 'content_cta_1_url'),
-    applyUrl: metaValue(metas, 'content_cta_2_url'),
+    applyUrl: metaValue(metas, 'content_cta_2_url') || deriveApplyUrl(cardId),
     location:
       metaValue(metas, 'content_info_2_value') ||
       extractCategoryField(categories, 'City'),

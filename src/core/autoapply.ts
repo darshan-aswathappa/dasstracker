@@ -55,6 +55,65 @@ export function armedAt(store: Store, now: Date): string {
   return stamp;
 }
 
+/** What one application attempt came to. `skipped` means it was not claimed. */
+export type ApplyOneOutcome = 'skipped' | 'submitted' | 'failed' | 'dry_run' | 'uncertain';
+
+export interface ApplyOneDeps {
+  store: Store;
+  applicator: Applicator;
+  notifier: Notifier;
+  notifyTo: string[];
+  maxAttempts?: number;
+  now?: () => Date;
+  log?: (msg: string) => void;
+}
+
+/**
+ * Apply to one job: claim it, run the flow, record the outcome, notify.
+ *
+ * The single place an application is made. Both the unattended scan and the
+ * one-shot command go through here, so a manual run cannot behave differently
+ * from the automatic one — including the claim that stops a job being applied
+ * to twice.
+ */
+export async function applyToJob(deps: ApplyOneDeps, job: StoredJob): Promise<ApplyOneOutcome> {
+  const { store, applicator, notifier, notifyTo } = deps;
+  const now = deps.now ?? (() => new Date());
+  const log = deps.log ?? (() => {});
+
+  const attemptedAt = now().toISOString();
+  if (!store.claimForApplication(job.cardId, attemptedAt, deps.maxAttempts ?? 3)) {
+    const existing = store.applicationFor(job.cardId);
+    log(
+      `Auto-apply: ${job.cardId} is already claimed or not retryable ` +
+        `(status ${existing?.status ?? 'unknown'}); skipping.`,
+    );
+    return 'skipped';
+  }
+
+  const result = await applicator.apply(job);
+  const screenshot = result.screenshots.at(-1) ?? null;
+
+  store.recordApplication({
+    cardId: job.cardId,
+    status: result.outcome,
+    attemptedAt,
+    submittedAt: result.outcome === 'submitted' ? now().toISOString() : null,
+    reason: result.reason,
+    screenshot,
+  });
+
+  if (result.outcome === 'submitted') {
+    await sendConfirmation(notifier, job, notifyTo, log);
+  } else if (result.outcome === 'uncertain') {
+    // Nobody is watching the logs on an unattended run, so this one gets
+    // mailed: it is the case where a duplicate application is possible.
+    await sendAlert(notifier, job, notifyTo, result.reason ?? 'unknown', log);
+  }
+
+  return result.outcome;
+}
+
 /** Apply to everything eligible, up to the per-run cap. */
 export async function runAutoApply(deps: AutoApplyDeps): Promise<AutoApplySummary> {
   const { store, applicator, notifier, notifyTo, enabled, maxPerRun } = deps;
@@ -81,40 +140,25 @@ export async function runAutoApply(deps: AutoApplyDeps): Promise<AutoApplySummar
   log(`Auto-apply: ${pending.length} entry-level job(s) to apply to.`);
 
   for (const job of pending) {
-    const attemptedAt = now().toISOString();
-    // Claim it in the database first. Checking and then acting would let an
-    // overlapping scan submit the same application twice; the claim is atomic.
-    if (!store.claimForApplication(job.cardId, attemptedAt, deps.maxAttempts ?? 3)) {
-      log(`Auto-apply: ${job.cardId} is already claimed or not retryable; skipping.`);
-      continue;
-    }
+    const outcome = await applyToJob(
+      {
+        store,
+        applicator,
+        notifier,
+        notifyTo,
+        maxAttempts: deps.maxAttempts,
+        now,
+        log,
+      },
+      job,
+    );
+    if (outcome === 'skipped') continue;
 
     summary.attempted++;
-    const result = await applicator.apply(job);
-    const screenshot = result.screenshots.at(-1) ?? null;
-
-    store.recordApplication({
-      cardId: job.cardId,
-      status: result.outcome,
-      attemptedAt,
-      submittedAt: result.outcome === 'submitted' ? now().toISOString() : null,
-      reason: result.reason,
-      screenshot,
-    });
-
-    if (result.outcome === 'submitted') {
-      summary.submitted++;
-      await sendConfirmation(notifier, job, notifyTo, log);
-    } else if (result.outcome === 'dry_run') {
-      summary.dryRun++;
-    } else if (result.outcome === 'uncertain') {
-      summary.uncertain++;
-      // Nobody is watching the logs on an unattended run, so this one gets
-      // mailed: it is the case where a duplicate application is possible.
-      await sendAlert(notifier, job, notifyTo, result.reason ?? 'unknown', log);
-    } else {
-      summary.failed++;
-    }
+    if (outcome === 'submitted') summary.submitted++;
+    else if (outcome === 'dry_run') summary.dryRun++;
+    else if (outcome === 'uncertain') summary.uncertain++;
+    else summary.failed++;
   }
 
   log(

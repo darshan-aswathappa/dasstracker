@@ -15,7 +15,15 @@
     <p>Please, note that if you decline, Dassault Syst&egrave;mes will not be able to process
        your employment application.</p>
   </div>
-  <button type="submit" name="consent" value="accept">I ACCEPT</button>
-  <button type="submit" name="consent" value="decline">I DECLINE</button>
+  <input type="hidden" name="consent" id="consentField" value="" />
+  <!-- The real portal renders these pills as anchors, not buttons. -->
+  <a href="#" id="accept" onclick="pick('accept');return false;">I ACCEPT</a>
+  <a href="#" id="decline" onclick="pick('decline');return false;">I DECLINE</a>
 </form>
+<script>
+  function pick(v) {
+    document.getElementById('consentField').value = v;
+    document.forms[0].submit();
+  }
+</script>
 </body></html>

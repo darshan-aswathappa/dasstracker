@@ -88,8 +88,10 @@ function reviewPage(overrides: Record<string, string> = {}): string {
     <p>Race (Please select the ethnic group(s) that apply to you) ${answers.race}</p>
     <h2>File Attachments</h2><table>${rows}</table>
     <form method="POST" action="/careersection/careersection/candidateacquisition/flow.jsf?step=done">
-      <button type="submit">SUBMIT</button>
-      <button type="button">SAVE AS DRAFT</button>
+      <!-- Anchors, as the real portal renders them. SAVE AS DRAFT sits right
+           next to SUBMIT, so the label match has to be exact. -->
+      <a href="#" onclick="document.forms[0].submit();return false;">SUBMIT</a>
+      <a href="#" onclick="return false;">SAVE AS DRAFT</a>
     </form></body></html>`;
 }
 
@@ -387,5 +389,27 @@ describe('the privacy agreement gate', () => {
     // Neither accepted nor declined on the candidate's behalf.
     expect(captured.consent).toBeUndefined();
     expect(captured.submitted).toBe(false);
+  }, 90_000);
+});
+
+describe('controls rendered as links rather than buttons', () => {
+  it('finds and clicks them, and never the one sitting next to it', async () => {
+    // The privacy page's I ACCEPT / I DECLINE and the review page's
+    // SUBMIT / SAVE AS DRAFT are all anchors in this replica, as on the
+    // real portal. getByRole('button') matches none of them.
+    captured = { submitted: false, hits: [], privacyGate: true };
+    const result = await createApplicator(config()).apply(job());
+
+    expect(captured.consent).toBe('accept');
+    expect(result.outcome).toBe('submitted');
+    expect(captured.submitted).toBe(true);
+  }, 90_000);
+
+  it('reports what the page does offer when a control is missing', async () => {
+    captured = { submitted: false, hits: [], privacyGate: true };
+    const profile = { ...loadApplicationProfile(), privacyLanguage: 'Klingon' };
+    // The language is not fatal; the run should still get through.
+    const result = await createApplicator(config({ profile })).apply(job());
+    expect(result.outcome).toBe('submitted');
   }, 90_000);
 });

@@ -26,6 +26,8 @@ const DEFAULT_LOGIN_HOST = 'talentacquisition.3ds.com';
 const STEP_TIMEOUT_MS = 45_000;
 /** Hard bound on the flow, so an unexpected loop cannot run forever. */
 const MAX_STEPS = 12;
+/** How long to wait for a step's post-back to navigate. */
+const NAV_TIMEOUT_MS = 20_000;
 
 export interface ApplicatorConfig {
   username: string;
@@ -308,6 +310,58 @@ function callInPage<T>(page: Page, fnSource: string, arg?: unknown): Promise<T> 
   return page.evaluate(call) as Promise<T>;
 }
 
+/**
+ * Click a control by its visible label, whatever element it happens to be.
+ *
+ * The portal styles its primary actions as pills that look identical whether
+ * they are <button>, <input> or <a>. getByRole('button') silently misses the
+ * anchors — which is how "I ACCEPT" went unfound on a page that plainly shows
+ * it. Matching on the label instead covers all of them.
+ */
+const FN_CLICK_LABEL = String.raw`(req) => {
+  const norm = function (el) {
+    return ((el.textContent || el.value || '') + '').replace(/\s+/g, ' ').trim();
+  };
+  const visible = function (el) {
+    return el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0;
+  };
+  const controls = Array.prototype.slice.call(
+    document.querySelectorAll(
+      'a,button,input[type=submit],input[type=button],input[type=reset],[role=button]'
+    )
+  );
+  for (let i = 0; i < req.patterns.length; i++) {
+    const re = new RegExp(req.patterns[i], 'i');
+    const hit = controls.find(function (el) { return re.test(norm(el)) && visible(el); });
+    if (hit) {
+      const label = norm(hit);
+      hit.click();
+      return label;
+    }
+  }
+  return null;
+}`;
+
+/** Every clickable label on the page, for diagnosing a control we cannot find. */
+const FN_LIST_CLICKABLES = String.raw`() => {
+  const norm = function (el) {
+    return ((el.textContent || el.value || '') + '').replace(/\s+/g, ' ').trim();
+  };
+  const visible = function (el) {
+    return el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0;
+  };
+  const seen = [];
+  Array.prototype.slice.call(
+    document.querySelectorAll(
+      'a,button,input[type=submit],input[type=button],input[type=reset],[role=button]'
+    )
+  ).forEach(function (el) {
+    const label = norm(el);
+    if (label && visible(el) && label.length < 60 && seen.indexOf(label) === -1) seen.push(label);
+  });
+  return seen;
+}`;
+
 type AnswerKind = 'radio' | 'checkbox' | 'select';
 
 interface AnswerRequest {
@@ -343,11 +397,41 @@ const selectResumeRow = (page: Page, fileName: string): Promise<boolean> =>
 const dismissCookieBanner = (page: Page): Promise<string | null> =>
   callInPage<string | null>(page, FN_DISMISS_COOKIES);
 
-/** Click the step's forward button and wait for the post-back to land. */
-async function clickAndSettle(page: Page, name: RegExp): Promise<void> {
-  await page.getByRole('button', { name }).first().click({ timeout: STEP_TIMEOUT_MS });
+const clickByLabel = (page: Page, patterns: string[]): Promise<string | null> =>
+  callInPage<string | null>(page, FN_CLICK_LABEL, { patterns });
+
+const listClickables = (page: Page): Promise<string[]> =>
+  callInPage<string[]>(page, FN_LIST_CLICKABLES);
+
+/**
+ * Click a step's forward control and wait for the post-back to land. Returns
+ * the label clicked, or null when nothing matched — callers treat null as a
+ * hard stop rather than carrying on with a form that never advanced.
+ */
+async function clickAndSettle(page: Page, patterns: string[]): Promise<string | null> {
+  // Clicking happens in-page, which — unlike Playwright's own click — does not
+  // wait for the navigation it triggers. The wait has to be armed BEFORE the
+  // click, or the next step reads the page we just left.
+  const navigated = page
+    .waitForNavigation({ timeout: NAV_TIMEOUT_MS })
+    .then(() => true)
+    .catch(() => false);
+  const clicked = await clickByLabel(page, patterns);
+  if (!clicked) {
+    await navigated; // let the armed wait settle rather than leak
+    return null;
+  }
+  await navigated;
   await page.waitForLoadState('networkidle', { timeout: STEP_TIMEOUT_MS }).catch(() => {});
+  return clicked;
 }
+
+/** Label patterns for the controls the flow drives. Anchored, so that SUBMIT
+ *  can never match SAVE AS DRAFT and I ACCEPT can never match I DECLINE. */
+const CONTINUE = ['^continue$'];
+const SUBMIT = ['^submit$'];
+const SIGN_IN = ['^log ?in$', '^sign ?in$'];
+const I_ACCEPT = ['^i\\s*accept$'];
 
 export interface Applicator {
   configured: boolean;
@@ -476,6 +560,18 @@ export function createApplicator(
           return await fail(`stuck on the ${step} step; it did not advance`);
         }
 
+        /** Advance the step, failing with what the page does offer. */
+        const advance = async (patterns: string[], what: string): Promise<ApplyResult | null> => {
+          const clicked = await clickAndSettle(page, patterns);
+          if (clicked) return null;
+          const offered = await listClickables(page).catch(() => []);
+          return await fail(
+            `could not find the ${what} control; the page offers: ${
+              offered.join(' | ') || '(nothing clickable)'
+            }`,
+          );
+        };
+
         switch (step) {
           case 'login': {
             if (signedIn) {
@@ -496,7 +592,8 @@ export function createApplicator(
             }
             await page.getByPlaceholder(/user name/i).first().fill(config!.username);
             await passwordField.fill(config!.password);
-            await clickAndSettle(page, /log ?in|sign ?in/i);
+            const stopped = await advance(SIGN_IN, 'sign-in');
+            if (stopped) return stopped;
             signedIn = true;
             break;
           }
@@ -512,13 +609,9 @@ export function createApplicator(
               );
             }
             await chooseSelect(page, 'Select your preferred language', p.privacyLanguage);
-            const accept = page.getByRole('button', { name: /^\s*I ACCEPT\s*$/i }).first();
-            if ((await accept.count()) === 0) {
-              return await fail('privacy agreement page has no I ACCEPT button');
-            }
             log(`[apply ${job.cardId}] accepting the privacy agreement`);
-            await accept.click({ timeout: STEP_TIMEOUT_MS });
-            await page.waitForLoadState('networkidle', { timeout: STEP_TIMEOUT_MS }).catch(() => {});
+            const stopped = await advance(I_ACCEPT, 'I ACCEPT');
+            if (stopped) return stopped;
             break;
           }
 
@@ -546,7 +639,8 @@ export function createApplicator(
               'notification',
               p.jobPostingNotification,
             );
-            await clickAndSettle(page, /continue/i);
+            const stopped = await advance(CONTINUE, 'Continue');
+            if (stopped) return stopped;
             break;
           }
 
@@ -564,7 +658,8 @@ export function createApplicator(
                 return await fail(`could not tick race "${race}"`);
               }
             }
-            await clickAndSettle(page, /continue/i);
+            const stopped = await advance(CONTINUE, 'Continue');
+            if (stopped) return stopped;
             break;
           }
 
@@ -580,7 +675,8 @@ export function createApplicator(
             if (!(await selectResumeRow(page, p.resumeFileName))) {
               return await fail(`could not tick Relevant/Resume for ${p.resumeFileName}`);
             }
-            await clickAndSettle(page, /continue/i);
+            const stopped = await advance(CONTINUE, 'Continue');
+            if (stopped) return stopped;
             break;
           }
 
@@ -591,9 +687,13 @@ export function createApplicator(
             if (problems.length > 0) {
               return await fail(`review does not match the profile: ${problems.join('; ')}`);
             }
-            const submit = page.getByRole('button', { name: /^submit$/i }).first();
-            if ((await submit.count()) === 0) {
-              return await fail('on the review page but no Submit button is present');
+            const offered = await listClickables(page).catch(() => []);
+            if (!offered.some((label) => /^submit$/i.test(label))) {
+              return await fail(
+                `on the review page but no Submit control is present; offers: ${
+                  offered.join(' | ') || '(nothing clickable)'
+                }`,
+              );
             }
             if (config!.dryRun) {
               log(`[apply ${job.cardId}] dry run: review checked out, nothing submitted.`);
@@ -610,7 +710,11 @@ export function createApplicator(
             let clickedAt: number;
             try {
               clickedAt = Date.now();
-              await clickAndSettle(page, /^submit$/i);
+              const pressed = await clickAndSettle(page, SUBMIT);
+              if (!pressed) {
+                // Nothing was clicked, so nothing was submitted: safe to retry.
+                return await fail('the Submit control vanished before it could be pressed');
+              }
             } catch (err) {
               return await uncertain(
                 `Submit was clicked but the page never settled (${

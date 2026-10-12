@@ -12,6 +12,8 @@ import { fetchJobs, type FetchQuery } from './fetcher.js';
 import { matchJob } from './matcher.js';
 import type { Store } from './store.js';
 import { classifyPendingJobs } from './classify.js';
+import { runAutoApply, type AutoApplySummary } from './autoapply.js';
+import type { Applicator } from './applicator.js';
 import type { JevClassifier } from './jev.js';
 import type { Notifier } from './notifier.js';
 import type { WhatsAppNotifier } from './whatsapp.js';
@@ -24,6 +26,13 @@ export interface ScanDeps {
   whatsapp?: WhatsAppNotifier;
   /** Optional entry-level classifier; when absent, jobs stay unclassified. */
   jev?: JevClassifier;
+  /** Optional auto-apply stage; only acts when explicitly armed. */
+  autoApply?: {
+    applicator: Applicator;
+    enabled: boolean;
+    maxPerRun: number;
+    notifyTo: string[];
+  };
   config: TrackerConfig;
   fetchImpl?: typeof fetch;
   now?: () => Date;
@@ -32,7 +41,7 @@ export interface ScanDeps {
 
 /** Run a single scan cycle and return its result (also persisted). */
 export async function runScan(deps: ScanDeps): Promise<ScanResult> {
-  const { store, notifier, whatsapp, jev, config } = deps;
+  const { store, notifier, whatsapp, jev, autoApply, config } = deps;
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? (() => {});
   const startedAt = now().toISOString();
@@ -82,6 +91,13 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
     // design: a Jev outage leaves jobs unbadged but must not stall a scan.
     if (jev) {
       await classifyPendingJobs(store, jev, () => now().toISOString(), log);
+    }
+
+    // Apply before the digest so a submitted job is already on record by the
+    // time its notification goes out. Never on the baseline seed: that pass
+    // exists to establish what already-open jobs look like, not to act on them.
+    if (autoApply && !isBaseline) {
+      await runAutoApplyStage(deps, autoApply, now, log);
     }
 
     if (isBaseline) {
@@ -144,4 +160,33 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
 
   store.recordScan(result);
   return result;
+}
+
+
+/**
+ * Run the auto-apply stage without letting it break a scan. An applicator
+ * fault must cost at most this feature: the scan still stores jobs and sends
+ * its digest.
+ */
+async function runAutoApplyStage(
+  deps: ScanDeps,
+  autoApply: NonNullable<ScanDeps['autoApply']>,
+  now: () => Date,
+  log: (msg: string) => void,
+): Promise<AutoApplySummary | null> {
+  try {
+    return await runAutoApply({
+      store: deps.store,
+      applicator: autoApply.applicator,
+      notifier: deps.notifier,
+      notifyTo: autoApply.notifyTo,
+      enabled: autoApply.enabled,
+      maxPerRun: autoApply.maxPerRun,
+      now,
+      log,
+    });
+  } catch (err) {
+    log(`Auto-apply stage failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
 }

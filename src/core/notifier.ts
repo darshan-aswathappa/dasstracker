@@ -18,9 +18,19 @@ export interface MailerConfig {
 
 export interface Notifier {
   send(jobs: StoredJob[]): Promise<void>;
+  /** Confirm an auto-submitted application to the apply-notification list. */
+  sendApplied(job: StoredJob, to: string[]): Promise<void>;
   verify(): Promise<void>;
   readonly configured: boolean;
 }
+
+/** Who gets told when an application is submitted. */
+export function applyNotifyList(env: NodeJS.ProcessEnv): string[] {
+  const configured = parseEmailList(env.APPLY_NOTIFY_TO);
+  return configured.length > 0 ? configured : DEFAULT_APPLY_NOTIFY;
+}
+
+const DEFAULT_APPLY_NOTIFY = ['darshanaswath@gmail.com', 'huns.n@northeastern.edu'];
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -138,12 +148,58 @@ export function buildDigest(jobs: StoredJob[]): {
   return { subject, text, html };
 }
 
+/** Subject and body for a submitted-application confirmation. */
+export function buildAppliedEmail(job: StoredJob): {
+  subject: string;
+  text: string;
+  html: string;
+} {
+  const title = job.title.trim();
+  const subject = `Applied: ${title}`;
+  const where = job.location || 'n/a';
+  const text = [
+    `Applied to the job successfully.`,
+    ``,
+    `Title:      ${title}`,
+    `Location:   ${where}`,
+    `Category:   ${job.category || 'n/a'}`,
+    `Experience: ${job.experience || 'n/a'}`,
+    `Posting:    ${job.url}`,
+    ``,
+    `Submitted by DassTracker auto-apply.`,
+  ].join('\n');
+
+  const html = `
+    <div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;">
+      <h2 style="font-size:17px;color:#111;">Applied to the job successfully</h2>
+      <div style="border-left:3px solid #3a5f4a;padding:8px 14px;margin:0 0 14px;">
+        <div style="font-size:15px;font-weight:600;color:#111;">
+          <a href="${escapeHtml(job.url)}" style="color:#0870d3;text-decoration:none;">${escapeHtml(title)}</a>
+        </div>
+        <div style="font-size:13px;color:#444;margin-top:4px;">
+          ${escapeHtml(where)} &nbsp;·&nbsp; ${escapeHtml(job.category || 'n/a')}
+        </div>
+        <div style="font-size:12px;color:#888;margin-top:2px;">
+          Experience level: ${escapeHtml(job.experience || 'n/a')}
+        </div>
+      </div>
+      <p style="font-size:11px;color:#aaa;margin-top:20px;">
+        Submitted by DassTracker auto-apply.
+      </p>
+    </div>`;
+
+  return { subject, text, html };
+}
+
 /** Create a Gmail-backed notifier. */
 export function createNotifier(config: MailerConfig | null): Notifier {
   if (!config) {
     return {
       configured: false,
       async send() {
+        throw new Error('Email not configured (set GMAIL_USER and GMAIL_APP_PASSWORD).');
+      },
+      async sendApplied() {
         throw new Error('Email not configured (set GMAIL_USER and GMAIL_APP_PASSWORD).');
       },
       async verify() {
@@ -191,6 +247,20 @@ export function createNotifier(config: MailerConfig | null): Notifier {
       await getTransport().sendMail({
         from: `DassTracker <${config.user}>`,
         ...recipients,
+        subject,
+        text,
+        html,
+      });
+    },
+    async sendApplied(job: StoredJob, to: string[]) {
+      const recipients = parseEmailList(to);
+      if (recipients.length === 0) return;
+      const { subject, text, html } = buildAppliedEmail(job);
+      // Both named recipients should see each other here: this is a two-person
+      // confirmation, not a bulk digest, so To: rather than BCC.
+      await getTransport().sendMail({
+        from: `DassTracker <${config.user}>`,
+        to: recipients,
         subject,
         text,
         html,

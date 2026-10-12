@@ -15,6 +15,15 @@ import {
   type WhatsAppNotifier,
 } from '../core/whatsapp.js';
 import { createJevClassifier, jevConfigFromEnv, type JevClassifier } from '../core/jev.js';
+import {
+  createApplicator,
+  applicatorConfigFromEnv,
+  autoApplyEnabled,
+  maxApplicationsPerScan,
+  type Applicator,
+} from '../core/applicator.js';
+import { loadApplicationProfile } from '../core/profile.js';
+import { applyNotifyList } from '../core/notifier.js';
 import { runScan } from '../core/scanner.js';
 import type { ScanResult, TrackerConfig } from '../core/types.js';
 
@@ -25,6 +34,8 @@ export interface AppContext {
   buildNotifier(): Notifier;
   buildWhatsApp(): WhatsAppNotifier;
   buildJev(): JevClassifier;
+  buildApplicator(): Applicator;
+  autoApplyArmed(): boolean;
   scan(): Promise<ScanResult>;
   log(msg: string): void;
 }
@@ -54,15 +65,39 @@ export function createApp(env: NodeJS.ProcessEnv = process.env): AppContext {
 
   const buildJev = (): JevClassifier => createJevClassifier(jevConfigFromEnv(env));
 
+  // The profile is validated once at startup: a typo in an answer should fail
+  // loudly here, not halfway through a live application.
+  const profile = loadApplicationProfile();
+  const buildApplicator = (): Applicator =>
+    createApplicator(applicatorConfigFromEnv(env, profile), log);
+  const autoApplyArmed = (): boolean => autoApplyEnabled(env);
+
   const scan = (): Promise<ScanResult> =>
     runScan({
       store,
       notifier: buildNotifier(),
       whatsapp: buildWhatsApp(),
       jev: buildJev(),
+      autoApply: {
+        applicator: buildApplicator(),
+        enabled: autoApplyArmed(),
+        maxPerRun: maxApplicationsPerScan(env),
+        notifyTo: applyNotifyList(env),
+      },
       config: getConfig(),
       log,
     });
 
-  return { store, getConfig, setConfig, buildNotifier, buildWhatsApp, buildJev, scan, log };
+  return {
+    store,
+    getConfig,
+    setConfig,
+    buildNotifier,
+    buildWhatsApp,
+    buildJev,
+    buildApplicator,
+    autoApplyArmed,
+    scan,
+    log,
+  };
 }

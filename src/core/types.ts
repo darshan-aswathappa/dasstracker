@@ -48,3 +48,17 @@ export interface ScanResult {
   notifiedCount: number;
   error: string | null;
 }
+
+/** Outcome of one auto-apply attempt. */
+export type ApplicationStatus = 'submitted' | 'failed' | 'dry_run';
+
+/** A recorded attempt to apply to a job through the 3DS careers portal. */
+export interface Application {
+  cardId: string;
+  status: ApplicationStatus;
+  attempts: number;
+  attemptedAt: string; // ISO-8601
+  submittedAt: string | null; // ISO-8601, set only on a confirmed Thank You page
+  reason: string | null; // failure detail, or the dry-run stopping point
+  screenshot: string | null; // path to the last screenshot taken
+}

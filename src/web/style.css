@@ -147,6 +147,12 @@ button:disabled { opacity: 0.4; cursor: default; }
   font-weight: 600;
 }
 
+.badge.applied {
+  color: var(--blue);
+  border-color: var(--blue);
+  font-weight: 600;
+}
+
 .job-meta .exp { color: var(--dim); }
 
 .empty {

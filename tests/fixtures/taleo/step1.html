@@ -1,0 +1,36 @@
+<!doctype html><html><head><title>Personal Information</title></head><body>
+<form method="POST" action="/careersection/careersection/candidateacquisition/flow.jsf?step=diversity">
+  <div class="question"><span><em>*</em>How did you hear about us?</span>
+    <select name="hear" id="f_hear">
+      <option value="">Select One...</option>
+      <option value="cw">Corporate Websites</option>
+      <option value="jb">JobBoards</option>
+      <option value="ref">Referral</option>
+    </select>
+  </div>
+  <div class="question"><span>Source</span>
+    <select name="source" id="f_source">
+      <option value="">Select One...</option>
+      <option value="dscs">Dassault Systemes Corporate Site</option>
+      <option value="other">Other Site</option>
+    </select>
+  </div>
+  <div><span>*First Name</span><input type="text" value="Nireeksha" /></div>
+  <div><span>*Last Name</span><input type="text" value="Huns" /></div>
+  <div class="question"><span><em>*</em>Will you now or in the future require sponsorship for employment visa status?</span>
+    <div><input type="radio" name="spon" id="s0" value="ns"><label for="s0">Not Specified</label></div>
+    <div><input type="radio" name="spon" id="s1" value="y"><label for="s1">Yes</label></div>
+    <div><input type="radio" name="spon" id="s2" value="n"><label for="s2">No</label></div>
+  </div>
+  <div class="question"><span><em>*</em>Are you legally authorized to work in the country for which you are applying?</span>
+    <div><input type="radio" name="auth" id="a0" value="ns"><label for="a0">Not Specified</label></div>
+    <div><input type="radio" name="auth" id="a1" value="y"><label for="a1">Yes</label></div>
+    <div><input type="radio" name="auth" id="a2" value="n"><label for="a2">No</label></div>
+  </div>
+  <div class="question"><strong>Job Posting Notification</strong>
+    <div><input type="checkbox" name="notify" id="n1" checked><label for="n1">Send an email notification whenever a new position matching this profile is posted.</label></div>
+  </div>
+  <button type="submit">CONTINUE</button>
+  <button type="button">SAVE AS DRAFT</button>
+</form>
+</body></html>

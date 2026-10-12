@@ -19,7 +19,14 @@ export function registerRoutes(
     const q = req.query as { matched?: string; limit?: string };
     const onlyMatched = q.matched === '1' || q.matched === 'true';
     const limit = Math.min(Math.max(Number(q.limit) || 100, 1), 500);
-    return { jobs: ctx.store.recentJobs(limit, onlyMatched) };
+    const jobs = ctx.store.recentJobs(limit, onlyMatched);
+    const applied = new Set(
+      ctx.store
+        .recentApplications(500)
+        .filter((a) => a.status === 'submitted')
+        .map((a) => a.cardId),
+    );
+    return { jobs: jobs.map((j) => ({ ...j, applied: applied.has(j.cardId) })) };
   });
 
   // Current config (no secrets).
@@ -69,8 +76,19 @@ export function registerRoutes(
       whatsappConfigured: ctx.buildWhatsApp().configured,
       jevConfigured: ctx.buildJev().configured,
       classification: ctx.store.classificationCounts(),
+      autoApply: {
+        armed: ctx.autoApplyArmed(),
+        credentialed: ctx.buildApplicator().configured,
+        submitted: ctx.store.countApplications('submitted'),
+        failed: ctx.store.countApplications('failed'),
+      },
     };
   });
+
+  // Recent auto-apply attempts, newest first.
+  app.get('/api/applications', async () => ({
+    applications: ctx.store.recentApplications(50),
+  }));
 
   // Send a test email to verify SMTP credentials.
   app.post('/api/test-email', async (_req, reply) => {

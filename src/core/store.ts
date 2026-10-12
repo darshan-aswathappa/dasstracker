@@ -10,7 +10,14 @@
 import Database from 'better-sqlite3';
 import { dirname } from 'node:path';
 import { mkdirSync } from 'node:fs';
-import type { Job, StoredJob, ScanResult, TrackerConfig } from './types.js';
+import type {
+  Job,
+  StoredJob,
+  ScanResult,
+  TrackerConfig,
+  Application,
+  ApplicationStatus,
+} from './types.js';
 
 export class Store {
   private db: Database.Database;
@@ -56,6 +63,16 @@ export class Store {
       CREATE TABLE IF NOT EXISTS settings (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS applications (
+        card_id      TEXT PRIMARY KEY,
+        status       TEXT NOT NULL,
+        attempts     INTEGER NOT NULL DEFAULT 1,
+        attempted_at TEXT NOT NULL,
+        submitted_at TEXT,
+        reason       TEXT,
+        screenshot   TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_jobs_first_seen ON jobs(first_seen_at DESC);
@@ -267,6 +284,84 @@ export class Store {
     };
   }
 
+  // --- Auto-apply bookkeeping ---
+
+  /**
+   * Entry-level matched jobs that are eligible for an auto-apply attempt.
+   *
+   * `since` excludes everything first seen before auto-apply was armed, so
+   * switching the feature on does not fire a burst of applications at the
+   * backlog. A job that failed is retried up to `maxAttempts`; one that was
+   * submitted is never touched again.
+   */
+  jobsToAutoApply(since: string, maxAttempts = 3, limit = 10): StoredJob[] {
+    const rows = this.db
+      .prepare(
+        `SELECT j.* FROM jobs j
+         LEFT JOIN applications a ON a.card_id = j.card_id
+         WHERE j.entry_level = 1
+           AND j.matched = 1
+           AND j.first_seen_at >= ?
+           AND (a.card_id IS NULL OR (a.status = 'failed' AND a.attempts < ?))
+         ORDER BY j.first_seen_at ASC
+         LIMIT ?`,
+      )
+      .all(since, maxAttempts, limit);
+    return rows.map(rowToJob);
+  }
+
+  /** True once a job has been successfully submitted. */
+  hasApplied(cardId: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 FROM applications WHERE card_id = ? AND status = 'submitted'`)
+      .get(cardId);
+    return row !== undefined;
+  }
+
+  applicationFor(cardId: string): Application | null {
+    const row = this.db.prepare('SELECT * FROM applications WHERE card_id = ?').get(cardId);
+    return row ? rowToApplication(row) : null;
+  }
+
+  /** Record an attempt, incrementing the attempt counter on a retry. */
+  recordApplication(app: Omit<Application, 'attempts'>): void {
+    this.db
+      .prepare(
+        `INSERT INTO applications
+           (card_id, status, attempts, attempted_at, submitted_at, reason, screenshot)
+         VALUES (?, ?, 1, ?, ?, ?, ?)
+         ON CONFLICT(card_id) DO UPDATE SET
+           status       = excluded.status,
+           attempts     = applications.attempts + 1,
+           attempted_at = excluded.attempted_at,
+           submitted_at = excluded.submitted_at,
+           reason       = excluded.reason,
+           screenshot   = excluded.screenshot`,
+      )
+      .run(
+        app.cardId,
+        app.status,
+        app.attemptedAt,
+        app.submittedAt,
+        app.reason,
+        app.screenshot,
+      );
+  }
+
+  recentApplications(limit = 50): Application[] {
+    const rows = this.db
+      .prepare('SELECT * FROM applications ORDER BY attempted_at DESC LIMIT ?')
+      .all(limit);
+    return rows.map(rowToApplication);
+  }
+
+  countApplications(status: ApplicationStatus): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS n FROM applications WHERE status = ?')
+      .get(status) as { n: number };
+    return row.n;
+  }
+
   // --- Settings (UI-editable config; secrets stay in env) ---
 
   getSetting(key: string): string | null {
@@ -309,6 +404,19 @@ export class Store {
   close(): void {
     this.db.close();
   }
+}
+
+function rowToApplication(row: unknown): Application {
+  const r = row as Record<string, unknown>;
+  return {
+    cardId: r.card_id as string,
+    status: r.status as ApplicationStatus,
+    attempts: (r.attempts as number) ?? 1,
+    attemptedAt: r.attempted_at as string,
+    submittedAt: (r.submitted_at as string | null) ?? null,
+    reason: (r.reason as string | null) ?? null,
+    screenshot: (r.screenshot as string | null) ?? null,
+  };
 }
 
 function rowToJob(row: unknown): StoredJob {

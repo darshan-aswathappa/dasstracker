@@ -58,6 +58,7 @@ function renderJob(j) {
   const notified = j.notifiedAt ? '<span class="badge">NOTIFIED</span>' : '';
   // Only entry level earns a badge; everything else just shows its band.
   const entry = j.entryLevel === true ? '<span class="badge entry">ENTRY LEVEL</span>' : '';
+  const applied = j.applied ? '<span class="badge applied">APPLIED</span>' : '';
   const experience = j.experience
     ? `<span class="exp">${esc(j.experience)}</span>`
     : '';
@@ -75,6 +76,7 @@ function renderJob(j) {
       <div class="job-foot">
         ${j.applyUrl ? `<a href="${esc(j.applyUrl)}" target="_blank" rel="noopener">Apply →</a>` : ''}
         ${entry}
+        ${applied}
         ${notified}
       </div>
     </div>`;
@@ -95,11 +97,15 @@ async function loadStatus() {
     const wa = s.whatsappConfigured
       ? '<span class="ok">wa ✓</span>'
       : '<span class="err">wa off</span>';
+    const a = s.autoApply || {};
+    const applyTxt = a.armed
+      ? ` · <b>${a.submitted ?? 0}</b> applied${a.failed ? ` (<span class="err">${a.failed} failed</span>)` : ''}`
+      : '';
     const c = s.classification || {};
     const entry = s.jevConfigured
       ? ` · <b>${c.entry ?? 0}</b> entry level${c.pending ? ` (${c.pending} unclassified)` : ''}`
       : '';
-    bar.innerHTML = `${lastTxt}${nextTxt} · <b>${s.totalJobs}</b> tracked${entry} · every ${s.intervalMinutes}m · ${mail} · ${wa}`;
+    bar.innerHTML = `${lastTxt}${nextTxt} · <b>${s.totalJobs}</b> tracked${entry}${applyTxt} · every ${s.intervalMinutes}m · ${mail} · ${wa}`;
     $('emailState').innerHTML = s.emailConfigured
       ? '● SMTP configured'
       : '○ email not configured — set GMAIL_USER / GMAIL_APP_PASSWORD in .env';
@@ -109,6 +115,11 @@ async function loadStatus() {
     $('jevState').innerHTML = s.jevConfigured
       ? '● Jev entry-level screening on (0–3 years)'
       : '○ Jev not configured — set OPENROUTER_API_KEY in .env';
+    $('applyState').innerHTML = !a.credentialed
+      ? '○ auto-apply: no portal credentials — set TALEO_USERNAME / TALEO_PASSWORD in .env'
+      : a.armed
+        ? '● auto-apply ARMED — entry-level jobs are submitted automatically'
+        : '○ auto-apply disarmed — set AUTO_APPLY_ENABLED=1 in .env to arm';
   } catch (err) {
     bar.innerHTML = `<span class="err">status error: ${esc(err.message)}</span>`;
   }

@@ -13,14 +13,16 @@
     "scan-once": "tsx scripts/scan-once.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "backfill": "tsx scripts/backfill-experience.ts"
+    "backfill": "tsx scripts/backfill-experience.ts",
+    "apply:probe": "tsx scripts/apply-probe.ts"
   },
   "dependencies": {
     "@fastify/static": "^7.0.4",
     "better-sqlite3": "^11.3.0",
     "fastify": "^4.28.1",
     "node-cron": "^3.0.3",
-    "nodemailer": "^6.9.15"
+    "nodemailer": "^6.9.15",
+    "playwright": "^1.64.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",

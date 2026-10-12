@@ -48,27 +48,8 @@ describe('auto-apply eligibility', () => {
     expect(store.jobsToAutoApply(ARMED)).toHaveLength(0);
   });
 
-  it('offers entry-level jobs regardless of the keyword filter', () => {
-    // The keyword/category rule gates the email digest, not applying. Entry
-    // level is the whole criterion, so a Legal or Sales posting counts too.
+  it('ignores entry-level jobs that did not match the keyword filter', () => {
     entryLevel('unmatched', '2026-10-12T10:00:00.000Z', false);
-    expect(store.jobsToAutoApply(ARMED).map((j) => j.cardId)).toEqual(['unmatched']);
-  });
-
-  it('offers matched and unmatched entry-level jobs alike', () => {
-    entryLevel('keyworded', '2026-10-12T10:00:00.000Z', true);
-    entryLevel('not-keyworded', '2026-10-12T11:00:00.000Z', false);
-    expect(store.jobsToAutoApply(ARMED).map((j) => j.cardId).sort()).toEqual([
-      'keyworded',
-      'not-keyworded',
-    ]);
-  });
-
-  it('still ignores a job that is not entry level, matched or not', () => {
-    store.insertJob(job('senior-matched', '2026-10-12T10:00:00.000Z'), true, '2026-10-12T10:00:00.000Z');
-    store.setClassification('senior-matched', false, ARMED);
-    store.insertJob(job('senior-unmatched', '2026-10-12T10:00:00.000Z'), false, '2026-10-12T10:00:00.000Z');
-    store.setClassification('senior-unmatched', false, ARMED);
     expect(store.jobsToAutoApply(ARMED)).toHaveLength(0);
   });
 

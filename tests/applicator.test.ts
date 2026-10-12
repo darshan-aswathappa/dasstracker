@@ -8,6 +8,7 @@ import {
   createApplicator,
   isExpectedHost,
   redactUrl,
+  isNavigationTeardown,
 } from '../src/core/applicator.js';
 import { loadApplicationProfile } from '../src/core/profile.js';
 import type { Job } from '../src/core/types.js';
@@ -178,5 +179,23 @@ describe('redactUrl', () => {
 
   it('does not leak junk it cannot parse', () => {
     expect(redactUrl('not a url')).toBe('<unparseable url>');
+  });
+});
+
+describe('isNavigationTeardown', () => {
+  it('recognises a context destroyed by the navigation we triggered', () => {
+    expect(
+      isNavigationTeardown(
+        new Error('page.evaluate: Execution context was destroyed, most likely because of a navigation'),
+      ),
+    ).toBe(true);
+    expect(isNavigationTeardown(new Error('Target closed'))).toBe(true);
+    expect(isNavigationTeardown(new Error('frame was detached'))).toBe(true);
+  });
+
+  it('does not swallow a genuine scripting error', () => {
+    expect(isNavigationTeardown(new Error('ReferenceError: __name is not defined'))).toBe(false);
+    expect(isNavigationTeardown(new Error('TypeError: hit.click is not a function'))).toBe(false);
+    expect(isNavigationTeardown('nope')).toBe(false);
   });
 });

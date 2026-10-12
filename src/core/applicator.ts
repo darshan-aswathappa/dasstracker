@@ -305,9 +305,33 @@ const FN_DISMISS_COOKIES = String.raw`() => {
  * drops any argument — it does not call the function for you — so the call is
  * built into the expression itself.
  */
-function callInPage<T>(page: Page, fnSource: string, arg?: unknown): Promise<T> {
+/**
+ * True when evaluate failed because the page navigated out from under it,
+ * rather than because the script was wrong. Only our own interaction can
+ * cause this, so the control did respond.
+ */
+export function isNavigationTeardown(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /execution context was destroyed|target closed|frame was detached|navigation/i.test(
+    message,
+  );
+}
+
+async function callInPage<T>(
+  page: Page,
+  fnSource: string,
+  arg?: unknown,
+  whenNavigated?: T,
+): Promise<T> {
   const call = arg === undefined ? `(${fnSource})()` : `(${fnSource})(${JSON.stringify(arg)})`;
-  return page.evaluate(call) as Promise<T>;
+  try {
+    return (await page.evaluate(call)) as T;
+  } catch (err) {
+    // A control that posts back can tear the context down mid-call. Where the
+    // caller says what that means, report it rather than failing the run.
+    if (whenNavigated !== undefined && isNavigationTeardown(err)) return whenNavigated;
+    throw err;
+  }
 }
 
 /**
@@ -335,7 +359,9 @@ const FN_CLICK_LABEL = String.raw`(req) => {
     const hit = controls.find(function (el) { return re.test(norm(el)) && visible(el); });
     if (hit) {
       const label = norm(hit);
-      hit.click();
+      // Clicking navigates, which destroys this execution context — and with
+      // it the pending result. Let evaluate return first, then click.
+      setTimeout(function () { hit.click(); }, 0);
       return label;
     }
   }
@@ -372,7 +398,9 @@ interface AnswerRequest {
 }
 
 const answerQuestion = (page: Page, request: AnswerRequest): Promise<boolean> =>
-  callInPage<boolean>(page, FN_ANSWER, request);
+  // A select that re-renders the form counts as answered: only our own change
+  // event could have triggered it. The review page is checked before submit.
+  callInPage<boolean>(page, FN_ANSWER, request, true);
 
 const chooseRadio = (page: Page, question: string, option: string): Promise<boolean> =>
   answerQuestion(page, { question, kind: 'radio', option });
@@ -388,20 +416,20 @@ const setCheckbox = (
 ): Promise<boolean> => answerQuestion(page, { question, kind: 'checkbox', option, checked });
 
 const attachmentNames = (page: Page): Promise<string[]> =>
-  callInPage<string[]>(page, FN_ATTACHMENT_NAMES);
+  callInPage<string[]>(page, FN_ATTACHMENT_NAMES, undefined, []);
 
 const selectResumeRow = (page: Page, fileName: string): Promise<boolean> =>
-  callInPage<boolean>(page, FN_SELECT_RESUME, fileName);
+  callInPage<boolean>(page, FN_SELECT_RESUME, fileName, true);
 
 /** Returns the label of whatever was clicked, or null if no banner was up. */
 const dismissCookieBanner = (page: Page): Promise<string | null> =>
   callInPage<string | null>(page, FN_DISMISS_COOKIES);
 
 const clickByLabel = (page: Page, patterns: string[]): Promise<string | null> =>
-  callInPage<string | null>(page, FN_CLICK_LABEL, { patterns });
+  callInPage<string | null>(page, FN_CLICK_LABEL, { patterns }, '(navigated)');
 
 const listClickables = (page: Page): Promise<string[]> =>
-  callInPage<string[]>(page, FN_LIST_CLICKABLES);
+  callInPage<string[]>(page, FN_LIST_CLICKABLES, undefined, []);
 
 /**
  * Click a step's forward control and wait for the post-back to land. Returns

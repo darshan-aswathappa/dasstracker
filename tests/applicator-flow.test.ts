@@ -38,6 +38,10 @@ interface Captured {
   /** When set, login lands straight on Review, as the real portal does for a
    *  candidate whose answers it already holds. */
   jumpToReview?: boolean;
+  /** When set, step 1 bounces the flow to another host showing a sign-in. */
+  detourHost?: string;
+  /** Credentials posted to the detour host, if the guard ever failed. */
+  leaked?: Record<string, string>;
 }
 
 let server: Server;
@@ -113,9 +117,23 @@ beforeAll(async () => {
       if (url.pathname.includes('application.jss')) {
         const f = parseBody(body);
         captured.login = { user: f.user?.[0] ?? '', pass: f.pass?.[0] ?? '' };
+        // A mid-application hop onto another host, showing a sign-in page.
+        if (captured.detourHost) {
+          res.writeHead(302, { Location: `${captured.detourHost}/elsewhere/login` });
+          return res.end();
+        }
         // The real portal skips straight to Review when it already holds the
         // candidate's answers from a previous application.
         return send(captured.jumpToReview ? reviewPage() : page('step1.html'));
+      }
+      if (url.pathname === '/elsewhere/login') {
+        return send(page('login.html').replace('<title>Login', '<title>Login'));
+      }
+      if (url.pathname === '/elsewhere/application.jss') {
+        const f = parseBody(body);
+        captured.leaked = { user: f.user?.[0] ?? '', pass: f.pass?.[0] ?? '' };
+        return send('<!doctype html><html><head><title>Thank You</title></head>' +
+          '<body><p>Process completed</p></body></html>');
       }
       const step = url.searchParams.get('step');
       if (step === 'diversity') {
@@ -316,5 +334,22 @@ describe('the cookie dialog', () => {
 
     expect(captured.cookieChoice).toBe('necessary');
     expect(captured.cookieChoice).not.toBe('all');
+  }, 90_000);
+});
+
+describe('a flow that wanders off the portal', () => {
+  it('stops rather than entering credentials on another host', async () => {
+    // Same server, reached by a different hostname: everything else about the
+    // page is a convincing sign-in form.
+    const port = new URL(base).port;
+    captured = { submitted: false, hits: [], detourHost: `http://localhost:${port}` };
+
+    const result = await createApplicator(config({ loginHost: '127.0.0.1' })).apply(job());
+
+    expect(result.outcome).toBe('failed');
+    expect(result.reason).toMatch(/left 127\.0\.0\.1 mid-application|refusing to enter/i);
+    // The decisive assertion: the real password was never posted off-host.
+    expect(captured.leaked).toBeUndefined();
+    expect(captured.submitted).toBe(false);
   }, 90_000);
 });

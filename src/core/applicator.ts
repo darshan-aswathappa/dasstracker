@@ -13,7 +13,7 @@
  * Thank You page is confirmed.
  */
 
-import { mkdirSync } from 'node:fs';
+import { chmodSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Browser, Page } from 'playwright';
 import type { ApplicationProfile } from './profile.js';
@@ -67,6 +67,24 @@ export function isExpectedHost(url: string, expectedHost: string): boolean {
     return new URL(url).hostname.toLowerCase() === expectedHost.trim().toLowerCase();
   } catch {
     return false;
+  }
+}
+
+/**
+ * A URL safe to log. `https://user:secret@host/x` is a valid URL, and these
+ * strings end up in logs, in the applications table, and in alert emails.
+ */
+export function redactUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password) {
+      parsed.username = '';
+      parsed.password = '';
+      return `${parsed.toString()} (credentials removed)`;
+    }
+    return parsed.toString();
+  } catch {
+    return '<unparseable url>';
   }
 }
 
@@ -340,7 +358,10 @@ export function createApplicator(
   const open = launch ?? (async () => (await import('playwright')).chromium.launch({ headless: config.headless }));
 
   async function apply(job: Job): Promise<ApplyResult> {
-    mkdirSync(config!.screenshotDir, { recursive: true });
+    // These capture the whole application — name, phone, email, answers — and
+    // this box is shared, so keep them readable only by the owning account.
+    mkdirSync(config!.screenshotDir, { recursive: true, mode: 0o700 });
+    chmodSync(config!.screenshotDir, 0o700);
     const shots: string[] = [];
     const browser = await open();
     const context = await browser.newContext({ acceptDownloads: false });
@@ -350,6 +371,11 @@ export function createApplicator(
     const shoot = async (label: string): Promise<void> => {
       const path = resolve(config!.screenshotDir, `${job.cardId}-${label}.png`);
       await page.screenshot({ path, fullPage: true }).catch(() => {});
+      try {
+        chmodSync(path, 0o600);
+      } catch {
+        // The screenshot is a diagnostic; losing it must not fail an application.
+      }
       shots.push(path);
     };
 
@@ -374,13 +400,15 @@ export function createApplicator(
       // typed into whatever this loads, so an unexpected host is a hard stop.
       if (!isExpectedHost(job.applyUrl, config!.loginHost)) {
         return await fail(
-          `apply URL host is not ${config!.loginHost}, refusing to sign in: ${job.applyUrl}`,
+          `apply URL host is not ${config!.loginHost}, refusing to sign in: ` +
+            redactUrl(job.applyUrl),
         );
       }
       await page.goto(job.applyUrl, { waitUntil: 'domcontentloaded' });
       if (!isExpectedHost(page.url(), config!.loginHost)) {
         return await fail(
-          `apply URL redirected off ${config!.loginHost}, refusing to sign in: ${page.url()}`,
+          `apply URL redirected off ${config!.loginHost}, refusing to sign in: ` +
+            redactUrl(page.url()),
         );
       }
 
@@ -392,6 +420,16 @@ export function createApplicator(
       // whichever step still needs input, so the sequence is not fixed. Work
       // out where we are each time round rather than assuming an order.
       for (let hop = 0; hop < MAX_STEPS; hop++) {
+        // Re-check on every hop, not just before the first navigation. The
+        // flow posts back repeatedly, and a redirect onto another host that
+        // happens to look like a sign-in page would otherwise be handed the
+        // real credentials by the `login` case below.
+        if (!isExpectedHost(page.url(), config!.loginHost)) {
+          return await fail(
+            `flow left ${config!.loginHost} mid-application, stopping: ` + redactUrl(page.url()),
+          );
+        }
+
         const banner = await dismissCookieBanner(page).catch(() => null);
         if (banner) {
           log(`[apply ${job.cardId}] dismissed the cookie banner via "${banner}"`);
@@ -420,8 +458,21 @@ export function createApplicator(
             if (signedIn) {
               return await fail('returned to the sign-in page — the credentials were rejected');
             }
+            // Last line of defence before the secret is typed: whatever the
+            // step detection concluded, only the real portal gets it.
+            if (!isExpectedHost(page.url(), config!.loginHost)) {
+              return await fail(
+                `refusing to enter credentials on ${redactUrl(page.url())}`,
+              );
+            }
+            const passwordField = page.locator('input[type=password]').first();
+            if ((await passwordField.count()) === 0) {
+              // Never type a password into a field the browser will render in
+              // clear text — and the screenshots below would capture it.
+              return await fail('sign-in page has no password field; not entering credentials');
+            }
             await page.getByPlaceholder(/user name/i).first().fill(config!.username);
-            await page.getByPlaceholder(/password/i).first().fill(config!.password);
+            await passwordField.fill(config!.password);
             await clickAndSettle(page, /log ?in|sign ?in/i);
             signedIn = true;
             break;

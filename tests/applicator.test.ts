@@ -7,6 +7,7 @@ import {
   maxApplicationsPerScan,
   createApplicator,
   isExpectedHost,
+  redactUrl,
 } from '../src/core/applicator.js';
 import { loadApplicationProfile } from '../src/core/profile.js';
 import type { Job } from '../src/core/types.js';
@@ -158,5 +159,24 @@ describe('isExpectedHost', () => {
     );
     expect(isExpectedHost('not a url', 'talentacquisition.3ds.com')).toBe(false);
     expect(isExpectedHost('', 'talentacquisition.3ds.com')).toBe(false);
+  });
+});
+
+describe('redactUrl', () => {
+  it('strips credentials smuggled into a URL', () => {
+    const out = redactUrl('https://user:hunter2@talentacquisition.3ds.com/careersection/x');
+    expect(out).not.toContain('hunter2');
+    expect(out).not.toContain('user');
+    expect(out).toContain('talentacquisition.3ds.com');
+    expect(out).toContain('credentials removed');
+  });
+
+  it('leaves an ordinary URL alone', () => {
+    const url = 'https://talentacquisition.3ds.com/careersection/qa/jobapply.ftl?job=550021';
+    expect(redactUrl(url)).toContain('job=550021');
+  });
+
+  it('does not leak junk it cannot parse', () => {
+    expect(redactUrl('not a url')).toBe('<unparseable url>');
   });
 });

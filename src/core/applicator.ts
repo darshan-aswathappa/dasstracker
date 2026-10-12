@@ -17,11 +17,14 @@ import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { Browser, Page } from 'playwright';
 import type { ApplicationProfile } from './profile.js';
+import { identifyStep, reviewProblems, type FlowStep } from './review.js';
 import type { Job } from './types.js';
 
 const DEFAULT_LOGIN_HOST = 'talentacquisition.3ds.com';
 /** Taleo pages post back on every Continue; give each one room to settle. */
 const STEP_TIMEOUT_MS = 45_000;
+/** Hard bound on the flow, so an unexpected loop cannot run forever. */
+const MAX_STEPS = 12;
 
 export interface ApplicatorConfig {
   username: string;
@@ -46,6 +49,8 @@ export interface ApplyResult {
   outcome: ApplyOutcome;
   reason: string | null;
   screenshots: string[];
+  /** The review page's text, captured on a dry run so it can be inspected. */
+  reviewText?: string;
 }
 
 /**
@@ -110,107 +115,174 @@ export function maxApplicationsPerScan(env: NodeJS.ProcessEnv): number {
 
 // --- In-page helpers -------------------------------------------------------
 //
-// Locating "the control belonging to this question" is a DOM-walking problem:
-// Taleo does not reliably tie a <label> to its input, so we find the question
-// text and take the controls that follow it. The walk runs inside the page,
-// in one self-contained function, because the browser is where the DOM is.
+// Each of these is a STRING, not a function. tsx/esbuild rewrites named arrow
+// functions to reference a `__name` helper that does not exist in the browser,
+// so a transpiled callback passed to page.evaluate dies with
+// "ReferenceError: __name is not defined". Keeping the source as a string
+// means nothing transpiles it, and the same code runs under tsx and tsc.
+//
+// They use String.raw because a plain template literal eats backslashes: `\s+`
+// would reach the browser as `s+`, quietly turning every whitespace regex into
+// one that matches the letter s. String.raw keeps the source verbatim.
+
+/** Set one answer, located by the question text the candidate reads. */
+const FN_ANSWER = String.raw`(req) => {
+  const norm = function (s) { return (s || '').replace(/\s+/g, ' ').trim(); };
+
+  const questionNode = function (pattern) {
+    const re = new RegExp(pattern, 'i');
+    const hits = Array.prototype.slice
+      .call(document.querySelectorAll('label,legend,td,th,div,span,p,h1,h2,h3'))
+      .filter(function (el) { return re.test(norm(el.textContent)); });
+    if (hits.length === 0) return null;
+    return hits.reduce(function (a, b) {
+      return norm(a.textContent).length <= norm(b.textContent).length ? a : b;
+    });
+  };
+
+  const controlsAfter = function (node, selector) {
+    const out = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+    let seen = false;
+    while (walker.nextNode()) {
+      const el = walker.currentNode;
+      if (el === node) { seen = true; continue; }
+      if (!seen) continue;
+      if (el.matches(selector)) out.push(el);
+      if (out.length > 0 && el.matches('input[type=submit],button')) break;
+    }
+    return out;
+  };
+
+  const labelFor = function (input) {
+    if (input.id) {
+      const lab = document.querySelector('label[for="' + CSS.escape(input.id) + '"]');
+      if (lab) return norm(lab.textContent);
+    }
+    const wrapping = input.closest('label');
+    if (wrapping) return norm(wrapping.textContent);
+    if (input.nextElementSibling) return norm(input.nextElementSibling.textContent);
+    return norm(input.parentElement ? input.parentElement.textContent : '');
+  };
+
+  const node = questionNode(req.question);
+  if (!node) return false;
+
+  if (req.kind === 'select') {
+    const select = controlsAfter(node, 'select')[0];
+    if (!select) return false;
+    const want = req.option.toLowerCase();
+    const match = Array.prototype.slice.call(select.options).find(function (o) {
+      return norm(o.textContent).toLowerCase() === want;
+    });
+    if (!match) return false;
+    select.value = match.value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
+  const inputs = controlsAfter(node, 'input[type=' + req.kind + ']');
+  const want = req.option.toLowerCase();
+  const exact = inputs.find(function (i) { return labelFor(i).toLowerCase() === want; });
+  const loose = inputs.find(function (i) { return labelFor(i).toLowerCase().indexOf(want) !== -1; });
+  const hit = exact || loose;
+  if (!hit) return false;
+
+  if (req.kind === 'radio') { hit.click(); return hit.checked; }
+  const target = req.checked !== false;
+  if (hit.checked !== target) hit.click();
+  return hit.checked === target;
+}`;
+
+/** File names listed on the File Attachments step, in row order. */
+const FN_ATTACHMENT_NAMES = String.raw`() => {
+  return Array.prototype.slice.call(document.querySelectorAll('table tr'))
+    .map(function (tr) {
+      const link = tr.querySelector('a');
+      return link ? (link.textContent || '').trim() : '';
+    })
+    .filter(function (name) { return /\.(pdf|docx?|txt|rtf)$/i.test(name); });
+}`;
+
+/** Tick Relevant+Resume on the wanted row, clearing every other row. */
+const FN_SELECT_RESUME = String.raw`(wanted) => {
+  const rows = Array.prototype.slice.call(document.querySelectorAll('table tr'));
+  const row = rows.find(function (tr) {
+    const link = tr.querySelector('a');
+    return link && (link.textContent || '').trim() === wanted;
+  });
+  if (!row) return false;
+  const boxes = Array.prototype.slice.call(row.querySelectorAll('input[type=checkbox]'));
+  if (boxes.length === 0) return false;
+  boxes.forEach(function (b) { if (!b.checked) b.click(); });
+  rows.forEach(function (other) {
+    if (other === row || !other.querySelector('a')) return;
+    Array.prototype.slice.call(other.querySelectorAll('input[type=checkbox]'))
+      .forEach(function (b) { if (b.checked) b.click(); });
+  });
+  return boxes.every(function (b) { return b.checked; });
+}`;
+
+/**
+ * Dismiss the cookie dialog, declining anything non-essential.
+ *
+ * The banner overlays the form and swallows clicks, so it has to go before any
+ * step can be filled. Of the choices offered we take the most private one and
+ * never "Accept All".
+ */
+const FN_DISMISS_COOKIES = String.raw`() => {
+  const wanted = [
+    /continue with only necessary cookies/i,
+    /only necessary/i,
+    /reject all/i,
+    /decline/i,
+  ];
+  // A consent banner is usually position:fixed, and a fixed element's
+  // offsetParent is null — so visibility must be judged by its box, not by
+  // offsetParent, or the one element we are looking for is filtered out.
+  const visible = function (el) {
+    return el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0;
+  };
+  const clickable = Array.prototype.slice.call(
+    document.querySelectorAll('a,button,input[type=button],input[type=submit],[role=button]')
+  );
+  for (let i = 0; i < wanted.length; i++) {
+    const hit = clickable.find(function (el) {
+      const label = (el.textContent || el.value || '').replace(/\s+/g, ' ').trim();
+      return wanted[i].test(label) && visible(el);
+    });
+    if (hit) {
+      const label = (hit.textContent || hit.value || '').replace(/\s+/g, ' ').trim();
+      hit.click();
+      return label;
+    }
+  }
+  return null;
+}`;
+
+/**
+ * Run one of the page functions above, with its argument.
+ *
+ * page.evaluate() given a string evaluates it as an expression and silently
+ * drops any argument — it does not call the function for you — so the call is
+ * built into the expression itself.
+ */
+function callInPage<T>(page: Page, fnSource: string, arg?: unknown): Promise<T> {
+  const call = arg === undefined ? `(${fnSource})()` : `(${fnSource})(${JSON.stringify(arg)})`;
+  return page.evaluate(call) as Promise<T>;
+}
 
 type AnswerKind = 'radio' | 'checkbox' | 'select';
 
 interface AnswerRequest {
   question: string;
   kind: AnswerKind;
-  /** Visible label of the option to pick. */
   option: string;
-  /** For checkboxes: the state to leave it in. Ignored otherwise. */
   checked?: boolean;
 }
 
-/**
- * Set one answer on the current step. Returns false when the question or the
- * option is not on the page, which every caller treats as a hard stop rather
- * than submitting a half-filled form.
- */
-async function answerQuestion(page: Page, request: AnswerRequest): Promise<boolean> {
-  return page.evaluate((req: AnswerRequest) => {
-    const norm = (s: string | null): string => (s || '').replace(/\s+/g, ' ').trim();
-
-    /** The smallest element whose text contains the question. */
-    const questionNode = (pattern: string): Element | null => {
-      const re = new RegExp(pattern, 'i');
-      const hits = Array.from(
-        document.querySelectorAll('label,legend,td,th,div,span,p,h1,h2,h3'),
-      ).filter((el) => re.test(norm(el.textContent)));
-      if (hits.length === 0) return null;
-      return hits.reduce((a, b) =>
-        norm(a.textContent).length <= norm(b.textContent).length ? a : b,
-      );
-    };
-
-    /** Controls appearing after the question, up to the next form button. */
-    const controlsAfter = (node: Element, selector: string): HTMLElement[] => {
-      const out: HTMLElement[] = [];
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
-      let seen = false;
-      while (walker.nextNode()) {
-        const el = walker.currentNode as HTMLElement;
-        if (el === node) {
-          seen = true;
-          continue;
-        }
-        if (!seen) continue;
-        if (el.matches(selector)) out.push(el);
-        if (out.length > 0 && el.matches('input[type=submit],button')) break;
-      }
-      return out;
-    };
-
-    /** The visible text labelling one input. */
-    const labelFor = (input: HTMLElement): string => {
-      if (input.id) {
-        const lab = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
-        if (lab) return norm(lab.textContent);
-      }
-      const wrapping = input.closest('label');
-      if (wrapping) return norm(wrapping.textContent);
-      const next = input.nextElementSibling;
-      if (next) return norm(next.textContent);
-      return norm(input.parentElement ? input.parentElement.textContent : '');
-    };
-
-    const node = questionNode(req.question);
-    if (!node) return false;
-
-    if (req.kind === 'select') {
-      const select = controlsAfter(node, 'select')[0] as HTMLSelectElement | undefined;
-      if (!select) return false;
-      const want = req.option.toLowerCase();
-      const match = Array.from(select.options).find(
-        (o) => norm(o.textContent).toLowerCase() === want,
-      );
-      if (!match) return false;
-      select.value = match.value;
-      // Taleo re-renders dependent fields on change, so the event matters.
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    }
-
-    const inputs = controlsAfter(node, `input[type=${req.kind}]`) as HTMLInputElement[];
-    const want = req.option.toLowerCase();
-    const exact = inputs.find((i) => labelFor(i).toLowerCase() === want);
-    const loose = inputs.find((i) => labelFor(i).toLowerCase().includes(want));
-    const hit = exact ?? loose;
-    if (!hit) return false;
-
-    if (req.kind === 'radio') {
-      hit.click();
-      return hit.checked;
-    }
-    const target = req.checked !== false;
-    if (hit.checked !== target) hit.click();
-    return hit.checked === target;
-  }, request);
-}
+const answerQuestion = (page: Page, request: AnswerRequest): Promise<boolean> =>
+  callInPage<boolean>(page, FN_ANSWER, request);
 
 const chooseRadio = (page: Page, question: string, option: string): Promise<boolean> =>
   answerQuestion(page, { question, kind: 'radio', option });
@@ -225,47 +297,15 @@ const setCheckbox = (
   checked: boolean,
 ): Promise<boolean> => answerQuestion(page, { question, kind: 'checkbox', option, checked });
 
-/** Read the file names listed on the File Attachments step, in row order. */
-async function attachmentNames(page: Page): Promise<string[]> {
-  return page.evaluate(() =>
-    Array.from(document.querySelectorAll('table tr'))
-      .map((tr) => {
-        const link = tr.querySelector('a');
-        return link ? (link.textContent || '').trim() : '';
-      })
-      .filter((name) => /\.(pdf|docx?|txt|rtf)$/i.test(name)),
-  );
-}
+const attachmentNames = (page: Page): Promise<string[]> =>
+  callInPage<string[]>(page, FN_ATTACHMENT_NAMES);
 
-/** Tick the Relevant and Resume boxes on the row holding the given file. */
-async function selectResumeRow(page: Page, fileName: string): Promise<boolean> {
-  return page.evaluate((wanted) => {
-    const rows = Array.from(document.querySelectorAll('table tr'));
-    const row = rows.find((tr) => {
-      const link = tr.querySelector('a');
-      return link && (link.textContent || '').trim() === wanted;
-    });
-    if (!row) return false;
-    const boxes = Array.from(row.querySelectorAll('input[type=checkbox]'));
-    if (boxes.length === 0) return false;
-    for (const box of boxes as HTMLInputElement[]) {
-      if (!box.checked) box.click();
-    }
-    // Clear the same two columns on every other row, so only this file is
-    // flagged as the resume even if a previous session left one ticked.
-    for (const other of rows) {
-      if (other === row) continue;
-      const link = other.querySelector('a');
-      if (!link) continue;
-      for (const box of Array.from(
-        other.querySelectorAll('input[type=checkbox]'),
-      ) as HTMLInputElement[]) {
-        if (box.checked) box.click();
-      }
-    }
-    return (boxes as HTMLInputElement[]).every((b) => b.checked);
-  }, fileName);
-}
+const selectResumeRow = (page: Page, fileName: string): Promise<boolean> =>
+  callInPage<boolean>(page, FN_SELECT_RESUME, fileName);
+
+/** Returns the label of whatever was clicked, or null if no banner was up. */
+const dismissCookieBanner = (page: Page): Promise<string | null> =>
+  callInPage<string | null>(page, FN_DISMISS_COOKIES);
 
 /** Click the step's forward button and wait for the post-back to land. */
 async function clickAndSettle(page: Page, name: RegExp): Promise<void> {
@@ -330,10 +370,8 @@ export function createApplicator(
     try {
       if (!job.applyUrl) return await fail('job has no apply URL');
 
-      // --- Sign in ---
       // Vet the URL before the browser ever opens it: the credentials are
-      // typed into whatever this loads, so an unexpected host is a hard stop,
-      // not something to notice afterwards.
+      // typed into whatever this loads, so an unexpected host is a hard stop.
       if (!isExpectedHost(job.applyUrl, config!.loginHost)) {
         return await fail(
           `apply URL host is not ${config!.loginHost}, refusing to sign in: ${job.applyUrl}`,
@@ -345,115 +383,175 @@ export function createApplicator(
           `apply URL redirected off ${config!.loginHost}, refusing to sign in: ${page.url()}`,
         );
       }
-      const user = page.getByPlaceholder(/user name/i).first();
-      if (await user.count()) {
-        await user.fill(config!.username);
-        await page.getByPlaceholder(/password/i).first().fill(config!.password);
-        await clickAndSettle(page, /log ?in|sign ?in/i);
-      }
-      await shoot('01-after-login');
 
-      const body = (await page.textContent('body')) ?? '';
-      if (/captcha|are you a robot|unusual activity/i.test(body)) {
-        // Working around a bot check is not something this tool does.
-        return await fail('the portal presented a CAPTCHA or bot check; finish this one by hand');
-      }
-      if (/invalid|incorrect.*(password|user)/i.test(body) && /sign in/i.test(body)) {
-        return await fail('sign-in was rejected — check TALEO_USERNAME / TALEO_PASSWORD');
-      }
-
-      // --- Personal information ---
       const p = config!.profile;
-      if (!(await chooseSelect(page, 'How did you hear about us', p.hearAboutUs))) {
-        return await fail(`could not set "How did you hear about us" to ${p.hearAboutUs}`);
-      }
-      await page.waitForTimeout(1_000); // the Source select is rendered by the first choice
-      await chooseSelect(page, 'Source', p.source);
+      let signedIn = false;
+      const visited: FlowStep[] = [];
 
-      if (!(await chooseRadio(page, 'require sponsorship for employment visa', p.requiresSponsorship))) {
-        return await fail('could not answer the visa sponsorship question');
-      }
-      if (!(await chooseRadio(page, 'legally authorized to work', p.legallyAuthorized))) {
-        return await fail('could not answer the work authorization question');
-      }
-      await setCheckbox(page, 'Job Posting Notification', 'notification', p.jobPostingNotification);
-      await shoot('02-personal-information');
-      await clickAndSettle(page, /continue/i);
+      // The portal carries a candidate's previous answers forward and lands on
+      // whichever step still needs input, so the sequence is not fixed. Work
+      // out where we are each time round rather than assuming an order.
+      for (let hop = 0; hop < MAX_STEPS; hop++) {
+        const banner = await dismissCookieBanner(page).catch(() => null);
+        if (banner) {
+          log(`[apply ${job.cardId}] dismissed the cookie banner via "${banner}"`);
+          await page.waitForTimeout(500);
+        }
 
-      // --- Diversity ---
-      if (!(await chooseRadio(page, 'Gender', p.gender))) {
-        return await fail(`could not set Gender to ${p.gender}`);
-      }
-      if (!(await chooseRadio(page, 'Veterans Invitation to Self Identify', p.veteranStatus))) {
-        return await fail(`could not set veteran status to ${p.veteranStatus}`);
-      }
-      for (const race of p.race) {
-        if (!(await setCheckbox(page, 'Race', race, true))) {
-          return await fail(`could not tick race "${race}"`);
+        const title = await page.title().catch(() => '');
+        const body = (await page.textContent('body').catch(() => '')) ?? '';
+
+        if (/captcha|are you a robot|unusual activity/i.test(body)) {
+          // Working around a bot check is not something this tool does.
+          return await fail('the portal presented a CAPTCHA or bot check; finish this one by hand');
+        }
+
+        const step = identifyStep(title, body);
+        visited.push(step);
+        await shoot(`${String(hop).padStart(2, '0')}-${step}`);
+
+        // Same step twice running means the post-back did not take us forward.
+        if (visited.length >= 2 && visited.at(-1) === visited.at(-2) && step !== 'unknown') {
+          return await fail(`stuck on the ${step} step; it did not advance`);
+        }
+
+        switch (step) {
+          case 'login': {
+            if (signedIn) {
+              return await fail('returned to the sign-in page — the credentials were rejected');
+            }
+            await page.getByPlaceholder(/user name/i).first().fill(config!.username);
+            await page.getByPlaceholder(/password/i).first().fill(config!.password);
+            await clickAndSettle(page, /log ?in|sign ?in/i);
+            signedIn = true;
+            break;
+          }
+
+          case 'personal': {
+            if (!(await chooseSelect(page, 'How did you hear about us', p.hearAboutUs))) {
+              return await fail(`could not set "How did you hear about us" to ${p.hearAboutUs}`);
+            }
+            await page.waitForTimeout(1_000); // the Source select is drawn by that choice
+            await chooseSelect(page, 'Source', p.source);
+            if (
+              !(await chooseRadio(
+                page,
+                'require sponsorship for employment visa',
+                p.requiresSponsorship,
+              ))
+            ) {
+              return await fail('could not answer the visa sponsorship question');
+            }
+            if (!(await chooseRadio(page, 'legally authorized to work', p.legallyAuthorized))) {
+              return await fail('could not answer the work authorization question');
+            }
+            await setCheckbox(
+              page,
+              'Job Posting Notification',
+              'notification',
+              p.jobPostingNotification,
+            );
+            await clickAndSettle(page, /continue/i);
+            break;
+          }
+
+          case 'diversity': {
+            if (!(await chooseRadio(page, 'Gender', p.gender))) {
+              return await fail(`could not set Gender to ${p.gender}`);
+            }
+            if (
+              !(await chooseRadio(page, 'Veterans Invitation to Self Identify', p.veteranStatus))
+            ) {
+              return await fail(`could not set veteran status to ${p.veteranStatus}`);
+            }
+            for (const race of p.race) {
+              if (!(await setCheckbox(page, 'Race', race, true))) {
+                return await fail(`could not tick race "${race}"`);
+              }
+            }
+            await clickAndSettle(page, /continue/i);
+            break;
+          }
+
+          case 'attachments': {
+            const names = await attachmentNames(page);
+            if (findResumeRow(names, p.resumeFileName) === -1) {
+              return await fail(
+                `resume "${p.resumeFileName}" is not on the account; found: ${
+                  names.join(', ') || 'none'
+                }`,
+              );
+            }
+            if (!(await selectResumeRow(page, p.resumeFileName))) {
+              return await fail(`could not tick Relevant/Resume for ${p.resumeFileName}`);
+            }
+            await clickAndSettle(page, /continue/i);
+            break;
+          }
+
+          case 'review': {
+            // Whoever filled this in — us this run, or the portal from a past
+            // application — this page is what gets submitted, so check it.
+            const problems = reviewProblems(body, p);
+            if (problems.length > 0) {
+              return await fail(`review does not match the profile: ${problems.join('; ')}`);
+            }
+            const submit = page.getByRole('button', { name: /^submit$/i }).first();
+            if ((await submit.count()) === 0) {
+              return await fail('on the review page but no Submit button is present');
+            }
+            if (config!.dryRun) {
+              log(`[apply ${job.cardId}] dry run: review checked out, nothing submitted.`);
+              return {
+                outcome: 'dry_run',
+                reason: 'stopped on the review page (AUTO_APPLY_DRY_RUN)',
+                screenshots: shots,
+                reviewText: body,
+              };
+            }
+
+            // Past this line the application may exist on the portal, so
+            // nothing below may report `failed` — that status allows a retry.
+            let clickedAt: number;
+            try {
+              clickedAt = Date.now();
+              await clickAndSettle(page, /^submit$/i);
+            } catch (err) {
+              return await uncertain(
+                `Submit was clicked but the page never settled (${
+                  err instanceof Error ? err.message : String(err)
+                }) — check the portal before applying again`,
+              );
+            }
+            await shoot('99-after-submit');
+            const done = (await page.textContent('body').catch(() => '')) ?? '';
+            if (!isThankYouPage(done)) {
+              return await uncertain(
+                `Submit was clicked ${Date.now() - clickedAt}ms ago but no Thank You page ` +
+                  'appeared — check the portal before applying again',
+              );
+            }
+            log(`[apply ${job.cardId}] submitted: ${job.title.trim()}`);
+            return { outcome: 'submitted', reason: null, screenshots: shots };
+          }
+
+          case 'thankyou': {
+            // Reaching this without submitting means it was already applied to.
+            if (!signedIn || visited.includes('review')) {
+              log(`[apply ${job.cardId}] submitted: ${job.title.trim()}`);
+              return { outcome: 'submitted', reason: null, screenshots: shots };
+            }
+            return await fail('landed on a Thank You page without submitting anything');
+          }
+
+          default:
+            return await fail(
+              `unrecognised page "${title}" — the portal flow has changed; see the screenshot`,
+            );
         }
       }
-      await shoot('03-diversity');
-      await clickAndSettle(page, /continue/i);
 
-      // --- File attachments ---
-      const names = await attachmentNames(page);
-      if (findResumeRow(names, p.resumeFileName) === -1) {
-        return await fail(
-          `resume "${p.resumeFileName}" is not on the account; found: ${names.join(', ') || 'none'}`,
-        );
-      }
-      if (!(await selectResumeRow(page, p.resumeFileName))) {
-        return await fail(`could not tick the Relevant/Resume boxes for ${p.resumeFileName}`);
-      }
-      await shoot('04-attachments');
-      await clickAndSettle(page, /continue/i);
-
-      // --- Review ---
-      await shoot('05-review');
-      const review = (await page.textContent('body')) ?? '';
-      const submit = page.getByRole('button', { name: /^submit$/i }).first();
-      if (!(await submit.count())) {
-        return await fail('reached the end of the flow without a Submit button');
-      }
-      // Guard against submitting a review page that lost the resume selection.
-      if (!review.includes(p.resumeFileName)) {
-        return await fail('the review page does not list the chosen resume; not submitting');
-      }
-
-      if (config!.dryRun) {
-        log(`[apply ${job.cardId}] dry run: stopped on the review page without submitting.`);
-        return {
-          outcome: 'dry_run',
-          reason: 'stopped on the review page (AUTO_APPLY_DRY_RUN)',
-          screenshots: shots,
-        };
-      }
-
-      // Past this line the application may already exist on the portal, so no
-      // error below may report `failed` — that status is what makes a job
-      // eligible to be applied to again.
-      let submittedAt: number;
-      try {
-        submittedAt = Date.now();
-        await clickAndSettle(page, /^submit$/i);
-      } catch (err) {
-        return await uncertain(
-          `Submit was clicked but the page never settled (${
-            err instanceof Error ? err.message : String(err)
-          }) — check the portal before applying again`,
-        );
-      }
-      await shoot('06-result');
-      const done = (await page.textContent('body').catch(() => '')) ?? '';
-      if (!isThankYouPage(done)) {
-        return await uncertain(
-          `Submit was clicked ${Date.now() - submittedAt}ms ago but no Thank You page ` +
-            'appeared — check the portal before applying again',
-        );
-      }
-
-      log(`[apply ${job.cardId}] submitted: ${job.title.trim()}`);
-      return { outcome: 'submitted', reason: null, screenshots: shots };
+      return await fail(`gave up after ${MAX_STEPS} steps without reaching a conclusion`);
     } catch (err) {
       return await fail(err instanceof Error ? err.message : String(err));
     } finally {

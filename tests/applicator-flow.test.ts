@@ -33,6 +33,11 @@ interface Captured {
   swallowConfirmation?: boolean;
   /** Every path the replica was asked for. */
   hits: string[];
+  /** Which cookie choice the automation clicked, if any. */
+  cookieChoice?: string;
+  /** When set, login lands straight on Review, as the real portal does for a
+   *  candidate whose answers it already holds. */
+  jumpToReview?: boolean;
 }
 
 let server: Server;
@@ -46,15 +51,33 @@ function parseBody(body: string): Record<string, string[]> {
   return out;
 }
 
-/** The review page, rendered from what the flow actually submitted. */
-function reviewPage(): string {
-  const resumes = captured.attachments?.res ?? [];
+/**
+ * The review page. When the flow filled the steps we render what it posted;
+ * when the portal "remembered" the candidate we render the stored answers.
+ * Either way it lists every answer as text, like the real page.
+ */
+function reviewPage(overrides: Record<string, string> = {}): string {
+  const resumes = captured.attachments?.res ?? ['Nireeksha_AI_Engineer.pdf'];
+  const answers = {
+    sponsorship: 'Yes',
+    authorized: 'Yes',
+    gender: 'Female',
+    veteran: 'Not a Protected Veteran',
+    race: 'Asian',
+    ...overrides,
+  };
   const rows = resumes.map((r) => `<tr><td>Yes</td><td>Yes</td><td>${r}</td></tr>`).join('');
   return `<!doctype html><html><head><title>Review and Submit</title></head><body>
-    <h2>Review and Submit</h2>
-    <p>How did you hear about us? ${captured.step1?.hear ?? ''}</p>
-    <p>Source ${captured.step1?.source ?? ''}</p>
-    <h3>File Attachments</h3><table>${rows}</table>
+    <p>The following information will be submitted after you click the Submit button.</p>
+    <h2>Personal Information</h2>
+    <p>Full Name Nireeksha Huns</p>
+    <p>Will you now or in the future require sponsorship for employment visa status? ${answers.sponsorship}</p>
+    <p>Are you legally authorized to work in the country for which you are applying? ${answers.authorized}</p>
+    <h2>Diversity - Part 1</h2>
+    <p>Gender ${answers.gender}</p>
+    <p>Veterans Invitation to Self Identify ${answers.veteran}</p>
+    <p>Race (Please select the ethnic group(s) that apply to you) ${answers.race}</p>
+    <h2>File Attachments</h2><table>${rows}</table>
     <form method="POST" action="/careersection/careersection/candidateacquisition/flow.jsf?step=done">
       <button type="submit">SUBMIT</button>
       <button type="button">SAVE AS DRAFT</button>
@@ -81,11 +104,18 @@ beforeAll(async () => {
         res.end(html);
       };
 
+      if (url.pathname === '/cookie') {
+        captured.cookieChoice = url.searchParams.get('c') ?? '';
+        res.writeHead(204);
+        return res.end();
+      }
       if (url.pathname.includes('jobapply.ftl')) return send(page('login.html'));
       if (url.pathname.includes('application.jss')) {
         const f = parseBody(body);
         captured.login = { user: f.user?.[0] ?? '', pass: f.pass?.[0] ?? '' };
-        return send(page('step1.html'));
+        // The real portal skips straight to Review when it already holds the
+        // candidate's answers from a previous application.
+        return send(captured.jumpToReview ? reviewPage() : page('step1.html'));
       }
       const step = url.searchParams.get('step');
       if (step === 'diversity') {
@@ -241,5 +271,50 @@ describe('applicator against a Taleo replica', () => {
     expect(result.outcome).toBe('failed');
     expect(result.reason).toMatch(/gender/i);
     expect(captured.submitted).toBe(false);
+  }, 90_000);
+});
+
+describe('the portal remembering a candidate', () => {
+  it('submits from a pre-filled Review page reached straight after login', async () => {
+    captured = { submitted: false, hits: [], jumpToReview: true };
+    const result = await createApplicator(config()).apply(job());
+
+    // No Continue was ever pressed: login landed on Review already filled in.
+    expect(result.outcome).toBe('submitted');
+    expect(captured.submitted).toBe(true);
+    expect(captured.step1).toBeUndefined();
+    expect(captured.diversity).toBeUndefined();
+  }, 90_000);
+
+  it('refuses a pre-filled Review that disagrees with the profile', async () => {
+    captured = { submitted: false, hits: [], jumpToReview: true };
+    // The remembered answers are not ours: the page says Female, we say Male.
+    const result = await createApplicator(
+      config({ profile: { ...loadApplicationProfile(), gender: 'Male' } }),
+    ).apply(job());
+
+    expect(result.outcome).toBe('failed');
+    expect(result.reason).toMatch(/review does not match the profile/i);
+    expect(captured.submitted).toBe(false);
+  }, 90_000);
+
+  it('refuses a pre-filled Review carrying the wrong resume', async () => {
+    captured = { submitted: false, hits: [], jumpToReview: true };
+    const profile = { ...loadApplicationProfile(), resumeFileName: 'Nireeksha_Huns_Resume.pdf' };
+    const result = await createApplicator(config({ profile })).apply(job());
+
+    expect(result.outcome).toBe('failed');
+    expect(result.reason).toMatch(/does not list the resume/i);
+    expect(captured.submitted).toBe(false);
+  }, 90_000);
+});
+
+describe('the cookie dialog', () => {
+  it('is dismissed with the private option, never Accept All', async () => {
+    captured = { submitted: false, hits: [] };
+    await createApplicator(config()).apply(job());
+
+    expect(captured.cookieChoice).toBe('necessary');
+    expect(captured.cookieChoice).not.toBe('all');
   }, 90_000);
 });

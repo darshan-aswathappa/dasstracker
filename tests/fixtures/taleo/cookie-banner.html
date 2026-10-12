@@ -1,0 +1,12 @@
+<div id="cookieBanner" style="position:fixed;top:0;left:0;right:0;background:#fff;border:1px solid #ccc;padding:20px;z-index:9999;">
+  <h2>You decide what cookies 3DS will use</h2>
+  <a href="#" id="ckNecessary" onclick="ck('necessary');return false;">Continue with only necessary cookies</a>
+  <button type="button" id="ckManage" onclick="ck('manage')">Manage my preferences</button>
+  <button type="button" id="ckAll" onclick="ck('all')">Accept All</button>
+</div>
+<script>
+  function ck(choice) {
+    fetch('/cookie?c=' + choice);
+    document.getElementById('cookieBanner').remove();
+  }
+</script>

@@ -18,10 +18,13 @@ export interface MailerConfig {
 
 export interface Notifier {
   send(jobs: StoredJob[]): Promise<void>;
-  /** Confirm an auto-submitted application to the apply-notification list. */
-  sendApplied(job: StoredJob, to: string[]): Promise<void>;
+  /**
+   * Confirm an auto-submitted application to the apply-notification list.
+   * `preview` marks the mail as a test, for checking it without applying.
+   */
+  sendApplied(job: StoredJob, to: string[], preview?: boolean): Promise<void>;
   /** Flag an application that was submitted but never confirmed. */
-  sendApplyAlert(job: StoredJob, to: string[], reason: string): Promise<void>;
+  sendApplyAlert(job: StoredJob, to: string[], reason: string, preview?: boolean): Promise<void>;
   verify(): Promise<void>;
   readonly configured: boolean;
 }
@@ -150,16 +153,29 @@ export function buildDigest(jobs: StoredJob[]): {
   return { subject, text, html };
 }
 
-/** Subject and body for a submitted-application confirmation. */
-export function buildAppliedEmail(job: StoredJob): {
+/**
+ * Subject and body for a submitted-application confirmation.
+ *
+ * `preview` is for seeing this mail without applying to anything. It keeps the
+ * layout identical but says plainly that nothing was submitted, so a test can
+ * never be mistaken for a real application by whoever opens it.
+ */
+export function buildAppliedEmail(
+  job: StoredJob,
+  preview = false,
+): {
   subject: string;
   text: string;
   html: string;
 } {
   const title = job.title.trim();
-  const subject = `Applied: ${title}`;
+  const subject = preview ? `[test] Applied: ${title}` : `Applied: ${title}`;
+  const notice = preview
+    ? 'THIS IS A TEST of the confirmation email. No application was submitted.'
+    : '';
   const where = job.location || 'n/a';
   const text = [
+    ...(preview ? [notice, ''] : []),
     `Applied to the job successfully.`,
     ``,
     `Title:      ${title}`,
@@ -173,6 +189,14 @@ export function buildAppliedEmail(job: StoredJob): {
 
   const html = `
     <div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;">
+      ${
+        preview
+          ? '<p style="background:#f3e1dd;border:1px solid #c0362c;color:#a52d24;' +
+            'padding:8px 12px;font-size:13px;font-weight:600;">' +
+            escapeHtml(notice) +
+            '</p>'
+          : ''
+      }
       <h2 style="font-size:17px;color:#111;">Applied to the job successfully</h2>
       <div style="border-left:3px solid #3a5f4a;padding:8px 14px;margin:0 0 14px;">
         <div style="font-size:15px;font-weight:600;color:#111;">
@@ -257,14 +281,15 @@ export function createNotifier(config: MailerConfig | null): Notifier {
         html,
       });
     },
-    async sendApplyAlert(job: StoredJob, to: string[], reason: string) {
+    async sendApplyAlert(job: StoredJob, to: string[], reason: string, preview = false) {
       const recipients = parseEmailList(to);
       if (recipients.length === 0) return;
       const title = job.title.trim();
+      const prefix = preview ? '[test] ' : '';
       await getTransport().sendMail({
         from: `DassTracker <${config.user}>`,
         to: recipients,
-        subject: `Check by hand: ${title}`,
+        subject: `${prefix}Check by hand: ${title}`,
         text:
           `An application was submitted but never confirmed, so it may or may not ` +
           `have gone through.\n\nTitle: ${title}\nPosting: ${job.url}\n` +
@@ -287,10 +312,10 @@ export function createNotifier(config: MailerConfig | null): Notifier {
           </div>`,
       });
     },
-    async sendApplied(job: StoredJob, to: string[]) {
+    async sendApplied(job: StoredJob, to: string[], preview = false) {
       const recipients = parseEmailList(to);
       if (recipients.length === 0) return;
-      const { subject, text, html } = buildAppliedEmail(job);
+      const { subject, text, html } = buildAppliedEmail(job, preview);
       // Both named recipients should see each other here: this is a two-person
       // confirmation, not a bulk digest, so To: rather than BCC.
       await getTransport().sendMail({

@@ -6,16 +6,25 @@
  * page without pressing Submit. Nothing is submitted by this script, ever —
  * the dry-run switch is forced on here regardless of the environment.
  *
- *   npm run apply:probe              # newest entry-level matched job
- *   npm run apply:probe -- 550021    # a specific card id
+ *   npm run apply:probe                      # newest entry-level matched job
+ *   npm run apply:probe -- 550021            # a specific card id
+ *   npm run apply:probe -- <full apply url>  # one exact link
  *
  * Screenshots of each step land in data/apply/ so a wrong selection can be
  * seen rather than guessed at.
+ *
+ * With --email-only it sends the notification instead, touching neither the
+ * portal nor the database, so the mail can be read before any real
+ * application depends on it:
+ *
+ *   npm run apply:probe -- 550021 --email-only           # the "Applied" mail
+ *   npm run apply:probe -- 550021 --email-only --alert   # the "check by hand" one
  */
 
 import { loadEnv } from '../src/core/env.js';
 import { createApp } from '../src/server/app.js';
 import { createApplicator, applicatorConfigFromEnv } from '../src/core/applicator.js';
+import { applyNotifyList } from '../src/core/notifier.js';
 import { loadApplicationProfile } from '../src/core/profile.js';
 
 loadEnv();
@@ -40,6 +49,34 @@ async function main() {
         : 'No entry-level matched job in the database to probe.',
     );
     process.exit(1);
+  }
+
+  // --email-only: send the notification and stop. No browser is opened, the
+  // portal is never contacted, and nothing is written to the applications
+  // table — so the job stays eligible for a real auto-apply afterwards.
+  if (process.argv.includes('--email-only')) {
+    const alert = process.argv.includes('--alert');
+    const notifier = ctx.buildNotifier();
+    if (!notifier.configured) {
+      console.error('Email is not configured; set GMAIL_USER and GMAIL_APP_PASSWORD in .env.');
+      process.exit(1);
+    }
+    const to = applyNotifyList(process.env);
+    log(`Sending the ${alert ? '"check by hand"' : '"Applied"'} email to ${to.join(', ')}`);
+    log(`Subject line will be marked [test]; no application was or will be submitted.`);
+    if (alert) {
+      await notifier.sendApplyAlert(
+        job,
+        to,
+        'this is a test of the alert email; nothing was submitted',
+        true,
+      );
+    } else {
+      await notifier.sendApplied(job, to, true);
+    }
+    log(`Sent for "${job.title.trim()}" (${job.cardId}). Nothing was applied to.`);
+    store.close();
+    process.exit(0);
   }
 
   const profile = loadApplicationProfile();

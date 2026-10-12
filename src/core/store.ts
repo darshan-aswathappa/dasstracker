@@ -287,7 +287,12 @@ export class Store {
   // --- Auto-apply bookkeeping ---
 
   /**
-   * Entry-level matched jobs that are eligible for an auto-apply attempt.
+   * Jobs eligible for an auto-apply attempt: every entry-level one.
+   *
+   * Deliberately NOT filtered by `matched`. That flag is the keyword/category
+   * rule behind the email digest, and it is not a condition for applying —
+   * entry level is the whole criterion, so roles outside the technical
+   * keywords are applied to too.
    *
    * `since` excludes everything first seen before auto-apply was armed, so
    * switching the feature on does not fire a burst of applications at the
@@ -300,7 +305,6 @@ export class Store {
         `SELECT j.* FROM jobs j
          LEFT JOIN applications a ON a.card_id = j.card_id
          WHERE j.entry_level = 1
-           AND j.matched = 1
            AND j.first_seen_at >= ?
            -- Only an outright failure is retried. in_progress means another
            -- run holds it; uncertain means something may already have been

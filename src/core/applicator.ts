@@ -197,6 +197,9 @@ const FN_ANSWER = String.raw`(req) => {
       return norm(o.textContent).toLowerCase() === want;
     });
     if (!match) return false;
+    // Already set: do NOT fire a change event. The portal posts back and
+    // re-renders the step on change, which throws away anything done since.
+    if (select.value === match.value) return true;
     select.value = match.value;
     select.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
@@ -209,7 +212,12 @@ const FN_ANSWER = String.raw`(req) => {
   const hit = exact || loose;
   if (!hit) return false;
 
-  if (req.kind === 'radio') { hit.click(); return hit.checked; }
+  // Same reasoning as the select: re-clicking a chosen radio can post back.
+  if (req.kind === 'radio') {
+    if (hit.checked) return true;
+    hit.click();
+    return hit.checked;
+  }
   const target = req.checked !== false;
   if (hit.checked !== target) hit.click();
   return hit.checked === target;
@@ -425,8 +433,15 @@ const selectResumeRow = (page: Page, fileName: string): Promise<boolean> =>
 const dismissCookieBanner = (page: Page): Promise<string | null> =>
   callInPage<string | null>(page, FN_DISMISS_COOKIES);
 
+/**
+ * No navigation tolerance here, deliberately. The click is deferred a tick so
+ * our own click cannot tear the context down before evaluate returns — so a
+ * teardown means something *else* navigated, and the click was lost. Reporting
+ * that as a successful click is what hid a lost I ACCEPT behind a page that
+ * had quietly reloaded underneath it.
+ */
 const clickByLabel = (page: Page, patterns: string[]): Promise<string | null> =>
-  callInPage<string | null>(page, FN_CLICK_LABEL, { patterns }, '(navigated)');
+  callInPage<string | null>(page, FN_CLICK_LABEL, { patterns });
 
 const listClickables = (page: Page): Promise<string[]> =>
   callInPage<string[]>(page, FN_LIST_CLICKABLES, undefined, []);

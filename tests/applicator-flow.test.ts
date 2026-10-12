@@ -47,6 +47,10 @@ interface Captured {
   /** Which privacy button was pressed, and the language chosen with it. */
   consent?: string;
   consentLanguage?: string;
+  /** '1' when the language select fired a change event. */
+  langChanged?: string;
+  /** Serve the variant whose language is already the wanted one. */
+  privacyAlreadyEnglish?: boolean;
 }
 
 let server: Server;
@@ -126,10 +130,12 @@ beforeAll(async () => {
         if (f.consent) {
           captured.consent = f.consent[0];
           captured.consentLanguage = f.lang?.[0] ?? '';
+          captured.langChanged = f.langChanged?.[0] ?? '0';
           return send(page('step1.html'));
         }
         captured.login = { user: f.user?.[0] ?? '', pass: f.pass?.[0] ?? '' };
         // The portal gates the application behind a privacy agreement.
+        if (captured.privacyAlreadyEnglish) return send(page('privacy-en.html'));
         if (captured.privacyGate) return send(page('privacy.html'));
         // A mid-application hop onto another host, showing a sign-in page.
         if (captured.detourHost) {
@@ -410,6 +416,27 @@ describe('controls rendered as links rather than buttons', () => {
     const profile = { ...loadApplicationProfile(), privacyLanguage: 'Klingon' };
     // The language is not fatal; the run should still get through.
     const result = await createApplicator(config({ profile })).apply(job());
+    expect(result.outcome).toBe('submitted');
+  }, 90_000);
+});
+
+describe('a step whose answer is already correct', () => {
+  it('leaves the language select alone rather than firing a post-back', async () => {
+    // On the real portal the privacy page already shows English, and changing
+    // it makes Taleo re-render the step — discarding the I ACCEPT click.
+    captured = { submitted: false, hits: [], privacyAlreadyEnglish: true };
+    const result = await createApplicator(config()).apply(job());
+
+    expect(captured.langChanged).toBe('0');
+    expect(captured.consent).toBe('accept');
+    expect(result.outcome).toBe('submitted');
+  }, 90_000);
+
+  it('still changes it when it is on the wrong language', async () => {
+    captured = { submitted: false, hits: [], privacyGate: true };
+    const result = await createApplicator(config()).apply(job());
+
+    expect(captured.consentLanguage).toBe('en');
     expect(result.outcome).toBe('submitted');
   }, 90_000);
 });

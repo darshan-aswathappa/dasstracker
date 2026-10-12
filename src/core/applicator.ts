@@ -35,12 +35,34 @@ export interface ApplicatorConfig {
   loginHost: string;
 }
 
-export type ApplyOutcome = 'submitted' | 'dry_run' | 'failed';
+/**
+ * `uncertain` means the Submit click went out but the confirmation never
+ * arrived. It is deliberately NOT `failed`: the application may well have
+ * landed, so it must never be retried automatically.
+ */
+export type ApplyOutcome = 'submitted' | 'dry_run' | 'failed' | 'uncertain';
 
 export interface ApplyResult {
   outcome: ApplyOutcome;
   reason: string | null;
   screenshots: string[];
+}
+
+/**
+ * Whether a URL points at the expected portal, compared on the parsed
+ * hostnamerather than by substring.
+ *
+ * This guards a credential-exfiltration path: `applyUrl` comes from the 3DS
+ * search API, which is external data we do not control. A substring check
+ * would accept `talentacquisition.3ds.com.evil.test`, and the next thing the
+ * flow does is type the real username and password into whatever loaded.
+ */
+export function isExpectedHost(url: string, expectedHost: string): boolean {
+  try {
+    return new URL(url).hostname.toLowerCase() === expectedHost.trim().toLowerCase();
+  } catch {
+    return false;
+  }
 }
 
 /** The portal's confirmation page, in the two wordings it uses. */
@@ -291,19 +313,37 @@ export function createApplicator(
       shots.push(path);
     };
 
+    /** A failure before anything was submitted; safe to retry later. */
     const fail = async (reason: string): Promise<ApplyResult> => {
       await shoot('failure');
       log(`[apply ${job.cardId}] ${reason}`);
       return { outcome: 'failed', reason, screenshots: shots };
     };
 
+    /** A failure after Submit was clicked; must never be retried. */
+    const uncertain = async (reason: string): Promise<ApplyResult> => {
+      await shoot('uncertain');
+      log(`[apply ${job.cardId}] NEEDS A HUMAN: ${reason}`);
+      return { outcome: 'uncertain', reason, screenshots: shots };
+    };
+
     try {
       if (!job.applyUrl) return await fail('job has no apply URL');
 
       // --- Sign in ---
+      // Vet the URL before the browser ever opens it: the credentials are
+      // typed into whatever this loads, so an unexpected host is a hard stop,
+      // not something to notice afterwards.
+      if (!isExpectedHost(job.applyUrl, config!.loginHost)) {
+        return await fail(
+          `apply URL host is not ${config!.loginHost}, refusing to sign in: ${job.applyUrl}`,
+        );
+      }
       await page.goto(job.applyUrl, { waitUntil: 'domcontentloaded' });
-      if (!page.url().includes(config!.loginHost)) {
-        return await fail(`apply URL did not lead to ${config!.loginHost}: ${page.url()}`);
+      if (!isExpectedHost(page.url(), config!.loginHost)) {
+        return await fail(
+          `apply URL redirected off ${config!.loginHost}, refusing to sign in: ${page.url()}`,
+        );
       }
       const user = page.getByPlaceholder(/user name/i).first();
       if (await user.count()) {
@@ -389,11 +429,27 @@ export function createApplicator(
         };
       }
 
-      await clickAndSettle(page, /^submit$/i);
+      // Past this line the application may already exist on the portal, so no
+      // error below may report `failed` — that status is what makes a job
+      // eligible to be applied to again.
+      let submittedAt: number;
+      try {
+        submittedAt = Date.now();
+        await clickAndSettle(page, /^submit$/i);
+      } catch (err) {
+        return await uncertain(
+          `Submit was clicked but the page never settled (${
+            err instanceof Error ? err.message : String(err)
+          }) — check the portal before applying again`,
+        );
+      }
       await shoot('06-result');
-      const done = (await page.textContent('body')) ?? '';
+      const done = (await page.textContent('body').catch(() => '')) ?? '';
       if (!isThankYouPage(done)) {
-        return await fail('submitted but no Thank You page appeared — verify this one by hand');
+        return await uncertain(
+          `Submit was clicked ${Date.now() - submittedAt}ms ago but no Thank You page ` +
+            'appeared — check the portal before applying again',
+        );
       }
 
       log(`[apply ${job.cardId}] submitted: ${job.title.trim()}`);

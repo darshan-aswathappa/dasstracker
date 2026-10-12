@@ -50,7 +50,13 @@ export interface ScanResult {
 }
 
 /** Outcome of one auto-apply attempt. */
-export type ApplicationStatus = 'submitted' | 'failed' | 'dry_run';
+export type ApplicationStatus =
+  | 'in_progress'
+  | 'submitted'
+  | 'failed'
+  | 'dry_run'
+  /** Submitted but unconfirmed. Never retried automatically. */
+  | 'uncertain';
 
 /** A recorded attempt to apply to a job through the 3DS careers portal. */
 export interface Application {

@@ -6,6 +6,7 @@ import {
   autoApplyEnabled,
   maxApplicationsPerScan,
   createApplicator,
+  isExpectedHost,
 } from '../src/core/applicator.js';
 import { loadApplicationProfile } from '../src/core/profile.js';
 import type { Job } from '../src/core/types.js';
@@ -112,5 +113,50 @@ describe('createApplicator without credentials', () => {
     const result = await applicator.apply(job);
     expect(result.outcome).toBe('failed');
     expect(result.reason).toMatch(/not configured/i);
+  });
+});
+
+describe('isExpectedHost', () => {
+  it('accepts the real portal', () => {
+    expect(
+      isExpectedHost(
+        'https://talentacquisition.3ds.com/careersection/qa/jobapply.ftl?job=1',
+        'talentacquisition.3ds.com',
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects a look-alike that a substring check would have let through', () => {
+    // applyUrl comes from the 3DS search API — data we do not control — and
+    // the credentials are typed into whatever it loads.
+    expect(
+      isExpectedHost(
+        'https://talentacquisition.3ds.com.evil.test/login',
+        'talentacquisition.3ds.com',
+      ),
+    ).toBe(false);
+    expect(
+      isExpectedHost('https://evil.test/?x=talentacquisition.3ds.com', 'talentacquisition.3ds.com'),
+    ).toBe(false);
+    expect(
+      isExpectedHost('https://evil.test/talentacquisition.3ds.com', 'talentacquisition.3ds.com'),
+    ).toBe(false);
+  });
+
+  it('rejects credentials-in-URL smuggling of the expected host', () => {
+    expect(
+      isExpectedHost(
+        'https://talentacquisition.3ds.com@evil.test/login',
+        'talentacquisition.3ds.com',
+      ),
+    ).toBe(false);
+  });
+
+  it('ignores case and rejects junk', () => {
+    expect(isExpectedHost('https://TalentAcquisition.3DS.com/x', 'talentacquisition.3ds.com')).toBe(
+      true,
+    );
+    expect(isExpectedHost('not a url', 'talentacquisition.3ds.com')).toBe(false);
+    expect(isExpectedHost('', 'talentacquisition.3ds.com')).toBe(false);
   });
 });

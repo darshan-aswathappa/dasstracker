@@ -37,6 +37,8 @@ export interface AutoApplySummary {
   submitted: number;
   failed: number;
   dryRun: number;
+  /** Submitted but unconfirmed — needs a human to check the portal. */
+  uncertain: number;
 }
 
 /**
@@ -58,7 +60,13 @@ export async function runAutoApply(deps: AutoApplyDeps): Promise<AutoApplySummar
   const { store, applicator, notifier, notifyTo, enabled, maxPerRun } = deps;
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? (() => {});
-  const summary: AutoApplySummary = { attempted: 0, submitted: 0, failed: 0, dryRun: 0 };
+  const summary: AutoApplySummary = {
+    attempted: 0,
+    submitted: 0,
+    failed: 0,
+    dryRun: 0,
+    uncertain: 0,
+  };
 
   if (!enabled) return summary;
   if (!applicator.configured) {
@@ -73,11 +81,15 @@ export async function runAutoApply(deps: AutoApplyDeps): Promise<AutoApplySummar
   log(`Auto-apply: ${pending.length} entry-level job(s) to apply to.`);
 
   for (const job of pending) {
-    // Re-check immediately before acting: a concurrent run may have taken it.
-    if (store.hasApplied(job.cardId)) continue;
+    const attemptedAt = now().toISOString();
+    // Claim it in the database first. Checking and then acting would let an
+    // overlapping scan submit the same application twice; the claim is atomic.
+    if (!store.claimForApplication(job.cardId, attemptedAt, deps.maxAttempts ?? 3)) {
+      log(`Auto-apply: ${job.cardId} is already claimed or not retryable; skipping.`);
+      continue;
+    }
 
     summary.attempted++;
-    const attemptedAt = now().toISOString();
     const result = await applicator.apply(job);
     const screenshot = result.screenshots.at(-1) ?? null;
 
@@ -95,6 +107,11 @@ export async function runAutoApply(deps: AutoApplyDeps): Promise<AutoApplySummar
       await sendConfirmation(notifier, job, notifyTo, log);
     } else if (result.outcome === 'dry_run') {
       summary.dryRun++;
+    } else if (result.outcome === 'uncertain') {
+      summary.uncertain++;
+      // Nobody is watching the logs on an unattended run, so this one gets
+      // mailed: it is the case where a duplicate application is possible.
+      await sendAlert(notifier, job, notifyTo, result.reason ?? 'unknown', log);
     } else {
       summary.failed++;
     }
@@ -102,9 +119,25 @@ export async function runAutoApply(deps: AutoApplyDeps): Promise<AutoApplySummar
 
   log(
     `Auto-apply done: attempted=${summary.attempted} submitted=${summary.submitted} ` +
-      `failed=${summary.failed} dryRun=${summary.dryRun}`,
+      `failed=${summary.failed} dryRun=${summary.dryRun} uncertain=${summary.uncertain}`,
   );
   return summary;
+}
+
+/** Tell the recipients an application needs checking by hand. */
+async function sendAlert(
+  notifier: Notifier,
+  job: StoredJob,
+  to: string[],
+  reason: string,
+  log: (msg: string) => void,
+): Promise<void> {
+  if (!notifier.configured) return;
+  try {
+    await notifier.sendApplyAlert(job, to, reason);
+  } catch (err) {
+    log(`Could not send the needs-checking alert: ${err instanceof Error ? err.message : err}`);
+  }
 }
 
 /**

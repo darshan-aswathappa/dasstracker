@@ -302,12 +302,48 @@ export class Store {
          WHERE j.entry_level = 1
            AND j.matched = 1
            AND j.first_seen_at >= ?
+           -- Only an outright failure is retried. in_progress means another
+           -- run holds it; uncertain means something may already have been
+           -- submitted; both stay out until a human looks.
            AND (a.card_id IS NULL OR (a.status = 'failed' AND a.attempts < ?))
          ORDER BY j.first_seen_at ASC
          LIMIT ?`,
       )
       .all(since, maxAttempts, limit);
     return rows.map(rowToJob);
+  }
+
+  /**
+   * Take exclusive ownership of a job before applying to it.
+   *
+   * Returns false when another run already holds it, or when it has reached a
+   * state that must not be retried. Claiming in the database rather than
+   * checking-then-acting is what stops an overlapping scan (the cron and a
+   * manual /api/scan can run at once) from submitting the same application
+   * twice.
+   */
+  claimForApplication(cardId: string, at: string, maxAttempts = 3): boolean {
+    const result = this.db
+      .prepare(
+        `INSERT INTO applications
+           (card_id, status, attempts, attempted_at, submitted_at, reason, screenshot)
+         VALUES (?, 'in_progress', 1, ?, NULL, NULL, NULL)
+         ON CONFLICT(card_id) DO UPDATE SET
+           status       = 'in_progress',
+           attempts     = applications.attempts + 1,
+           attempted_at = excluded.attempted_at
+         WHERE applications.status = 'failed' AND applications.attempts < ?`,
+      )
+      .run(cardId, at, maxAttempts);
+    return result.changes > 0;
+  }
+
+  /** Applications left mid-flight by a crash; they need a human, not a retry. */
+  stuckApplications(): Application[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM applications WHERE status = 'in_progress'`)
+      .all();
+    return rows.map(rowToApplication);
   }
 
   /** True once a job has been successfully submitted. */

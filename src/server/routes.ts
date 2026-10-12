@@ -81,6 +81,8 @@ export function registerRoutes(
         credentialed: ctx.buildApplicator().configured,
         submitted: ctx.store.countApplications('submitted'),
         failed: ctx.store.countApplications('failed'),
+        uncertain: ctx.store.countApplications('uncertain'),
+        inProgress: ctx.store.stuckApplications().length,
       },
     };
   });

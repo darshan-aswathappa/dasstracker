@@ -36,15 +36,19 @@ function stubApplicator(outcomes: ApplyResult[] | ApplyResult) {
 
 function stubNotifier() {
   const sent: Array<{ job: StoredJob; to: string[] }> = [];
+  const alerts: Array<{ job: StoredJob; to: string[] }> = [];
   const notifier: Notifier = {
     configured: true,
     async send() {},
     async sendApplied(job, to) {
       sent.push({ job, to });
     },
+    async sendApplyAlert(job, to) {
+      alerts.push({ job, to });
+    },
     async verify() {},
   };
-  return { notifier, sent };
+  return { notifier, sent, alerts };
 }
 
 const OK: ApplyResult = { outcome: 'submitted', reason: null, screenshots: ['/tmp/a.png'] };
@@ -168,6 +172,7 @@ describe('runAutoApply', () => {
       async sendApplied() {
         throw new Error('SMTP blocked');
       },
+      async sendApplyAlert() {},
       async verify() {},
     };
     const logs: string[] = [];
@@ -209,5 +214,133 @@ describe('armedAt', () => {
     expect(first).toBe('2026-10-12T09:00:00.000Z');
     expect(second).toBe(first);
     store.close();
+  });
+});
+
+describe('an application that may already have been submitted', () => {
+  let store: Store;
+  beforeEach(() => {
+    store = new Store(':memory:');
+  });
+  afterEach(() => store.close());
+
+  const UNCERTAIN: ApplyResult = {
+    outcome: 'uncertain',
+    reason: 'Submit was clicked but no Thank You page appeared',
+    screenshots: ['/tmp/u.png'],
+  };
+
+  function entryLevel(id: string) {
+    const seenAt = '2026-10-12T10:00:00.000Z';
+    store.insertJob(job(id, seenAt), true, seenAt);
+    store.setClassification(id, true, seenAt);
+  }
+
+  const base = (over: Record<string, unknown>) => ({
+    store,
+    notifyTo: TO,
+    enabled: true,
+    maxPerRun: 3,
+    now: () => new Date('2026-10-12T09:00:00.000Z'),
+    ...over,
+  });
+
+  it('is never retried, because retrying could apply a second time', async () => {
+    entryLevel('1');
+    const { applicator, seen } = stubApplicator(UNCERTAIN);
+    const { notifier } = stubNotifier();
+
+    await runAutoApply(base({ applicator, notifier }) as never);
+    await runAutoApply(base({ applicator, notifier }) as never);
+    await runAutoApply(base({ applicator, notifier }) as never);
+
+    expect(seen).toEqual(['1']); // attempted exactly once, ever
+    expect(store.applicationFor('1')?.status).toBe('uncertain');
+  });
+
+  it('is not reported as a success', async () => {
+    entryLevel('1');
+    const { applicator } = stubApplicator(UNCERTAIN);
+    const { notifier, sent, alerts } = stubNotifier();
+
+    const s = await runAutoApply(base({ applicator, notifier }) as never);
+
+    expect(s.submitted).toBe(0);
+    expect(s.uncertain).toBe(1);
+    expect(store.hasApplied('1')).toBe(false);
+    // No "applied successfully" mail; an alert instead.
+    expect(sent).toEqual([]);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].to).toEqual(TO);
+  });
+});
+
+describe('concurrent runs', () => {
+  let store: Store;
+  beforeEach(() => {
+    store = new Store(':memory:');
+  });
+  afterEach(() => store.close());
+
+  it('only one of two overlapping runs applies to a job', async () => {
+    const seenAt = '2026-10-12T10:00:00.000Z';
+    store.insertJob(job('1', seenAt), true, seenAt);
+    store.setClassification('1', true, seenAt);
+
+    const seen: string[] = [];
+    // Applying is slow, so both runs are in flight at the same time — exactly
+    // the window where the cron and a manual /api/scan can collide.
+    const slow: Applicator = {
+      configured: true,
+      async apply(j) {
+        seen.push(j.cardId);
+        await new Promise((r) => setTimeout(r, 30));
+        return OK;
+      },
+    };
+    const { notifier } = stubNotifier();
+    const opts = {
+      store,
+      applicator: slow,
+      notifier,
+      notifyTo: TO,
+      enabled: true,
+      maxPerRun: 3,
+      now: () => new Date('2026-10-12T09:00:00.000Z'),
+    };
+
+    await Promise.all([runAutoApply(opts as never), runAutoApply(opts as never)]);
+
+    expect(seen).toEqual(['1']);
+  });
+
+  it('a claim is not handed out twice', () => {
+    expect(store.claimForApplication('x', 'ts')).toBe(true);
+    expect(store.claimForApplication('x', 'ts')).toBe(false);
+  });
+
+  it('a claim is released for retry only by an outright failure', () => {
+    store.claimForApplication('x', 'ts');
+    expect(store.stuckApplications().map((a) => a.cardId)).toEqual(['x']);
+
+    store.recordApplication({
+      cardId: 'x',
+      status: 'failed',
+      attemptedAt: 'ts',
+      submittedAt: null,
+      reason: 'boom',
+      screenshot: null,
+    });
+    expect(store.claimForApplication('x', 'ts')).toBe(true);
+
+    store.recordApplication({
+      cardId: 'x',
+      status: 'uncertain',
+      attemptedAt: 'ts',
+      submittedAt: null,
+      reason: 'no confirmation',
+      screenshot: null,
+    });
+    expect(store.claimForApplication('x', 'ts')).toBe(false);
   });
 });

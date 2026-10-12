@@ -20,6 +20,8 @@ export interface Notifier {
   send(jobs: StoredJob[]): Promise<void>;
   /** Confirm an auto-submitted application to the apply-notification list. */
   sendApplied(job: StoredJob, to: string[]): Promise<void>;
+  /** Flag an application that was submitted but never confirmed. */
+  sendApplyAlert(job: StoredJob, to: string[], reason: string): Promise<void>;
   verify(): Promise<void>;
   readonly configured: boolean;
 }
@@ -202,6 +204,9 @@ export function createNotifier(config: MailerConfig | null): Notifier {
       async sendApplied() {
         throw new Error('Email not configured (set GMAIL_USER and GMAIL_APP_PASSWORD).');
       },
+      async sendApplyAlert() {
+        throw new Error('Email not configured (set GMAIL_USER and GMAIL_APP_PASSWORD).');
+      },
       async verify() {
         throw new Error('Email not configured (set GMAIL_USER and GMAIL_APP_PASSWORD).');
       },
@@ -250,6 +255,36 @@ export function createNotifier(config: MailerConfig | null): Notifier {
         subject,
         text,
         html,
+      });
+    },
+    async sendApplyAlert(job: StoredJob, to: string[], reason: string) {
+      const recipients = parseEmailList(to);
+      if (recipients.length === 0) return;
+      const title = job.title.trim();
+      await getTransport().sendMail({
+        from: `DassTracker <${config.user}>`,
+        to: recipients,
+        subject: `Check by hand: ${title}`,
+        text:
+          `An application was submitted but never confirmed, so it may or may not ` +
+          `have gone through.\n\nTitle: ${title}\nPosting: ${job.url}\n` +
+          `Reason: ${reason}\n\nCheck "View My Submissions" on the portal before ` +
+          `applying again. DassTracker will not retry this one on its own.`,
+        html: `
+          <div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;">
+            <h2 style="font-size:17px;color:#111;">An application needs checking by hand</h2>
+            <div style="border-left:3px solid #c0362c;padding:8px 14px;margin:0 0 14px;">
+              <div style="font-size:15px;font-weight:600;">
+                <a href="${escapeHtml(job.url)}" style="color:#0870d3;text-decoration:none;">${escapeHtml(title)}</a>
+              </div>
+              <div style="font-size:13px;color:#444;margin-top:6px;">${escapeHtml(reason)}</div>
+            </div>
+            <p style="font-size:13px;color:#444;">
+              Submit was clicked but the confirmation page never appeared, so this may
+              or may not have gone through. Check &ldquo;View My Submissions&rdquo; on the
+              portal before applying again &mdash; DassTracker will not retry it on its own.
+            </p>
+          </div>`,
       });
     },
     async sendApplied(job: StoredJob, to: string[]) {

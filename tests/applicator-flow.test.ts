@@ -29,6 +29,10 @@ interface Captured {
   diversity?: Record<string, string[]>;
   attachments?: Record<string, string[]>;
   submitted: boolean;
+  /** When set, the page after Submit is not the confirmation. */
+  swallowConfirmation?: boolean;
+  /** Every path the replica was asked for. */
+  hits: string[];
 }
 
 let server: Server;
@@ -64,13 +68,14 @@ const THANK_YOU = `<!doctype html><html><head><title>Thank You</title></head><bo
 
 beforeAll(async () => {
   shotDir = mkdtempSync(join(tmpdir(), 'dasstracker-shots-'));
-  captured = { submitted: false };
+  captured = { submitted: false, hits: [] };
 
   server = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {
       const url = new URL(req.url ?? '/', base);
+      captured.hits.push(url.pathname);
       const send = (html: string) => {
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end(html);
@@ -97,7 +102,13 @@ beforeAll(async () => {
       }
       if (step === 'done') {
         captured.submitted = true;
-        return send(THANK_YOU);
+        // Reproduce the portal accepting a submission but not showing the
+        // confirmation — a timeout, a redirect loop, an interstitial.
+        return send(
+          captured.swallowConfirmation
+            ? '<!doctype html><html><head><title>...</title></head><body><p>Please wait</p></body></html>'
+            : THANK_YOU,
+        );
       }
       res.writeHead(404);
       res.end('nope');
@@ -143,7 +154,7 @@ function job(): Job {
 
 describe('applicator against a Taleo replica', () => {
   it('fills every step and reaches the Thank You page', async () => {
-    captured = { submitted: false };
+    captured = { submitted: false, hits: [] };
     const result = await createApplicator(config()).apply(job());
 
     expect(result.reason).toBeNull();
@@ -177,7 +188,7 @@ describe('applicator against a Taleo replica', () => {
   });
 
   it('stops on the review page in dry-run mode without submitting', async () => {
-    captured = { submitted: false };
+    captured = { submitted: false, hits: [] };
     const result = await createApplicator(config({ dryRun: true })).apply(job());
 
     expect(result.outcome).toBe('dry_run');
@@ -186,7 +197,7 @@ describe('applicator against a Taleo replica', () => {
   }, 90_000);
 
   it('refuses to submit when the wanted resume is not on the account', async () => {
-    captured = { submitted: false };
+    captured = { submitted: false, hits: [] };
     const profile = { ...loadApplicationProfile(), resumeFileName: 'Does_Not_Exist.pdf' };
     const result = await createApplicator(config({ profile })).apply(job());
 
@@ -195,8 +206,35 @@ describe('applicator against a Taleo replica', () => {
     expect(captured.submitted).toBe(false);
   }, 90_000);
 
+  it('reports uncertainty, not failure, when Submit lands but the confirmation does not', async () => {
+    captured = { submitted: false, hits: [], swallowConfirmation: true };
+    const result = await createApplicator(config()).apply(job());
+
+    // The portal did receive the submission, so this must never be reported as
+    // a plain failure: that is the status that makes a job eligible to retry.
+    expect(captured.submitted).toBe(true);
+    expect(result.outcome).toBe('uncertain');
+    expect(result.reason).toMatch(/no Thank You page|never settled/i);
+  }, 90_000);
+
+  it('refuses to sign in when the apply URL points somewhere unexpected', async () => {
+    captured = { submitted: false, hits: [] };
+    const evil = {
+      ...job(),
+      applyUrl: `http://localhost:${new URL(base).port}/careersection/qa/jobapply.ftl?job=1`,
+    };
+    // Same server, different hostname: the credentials must not be typed.
+    const result = await createApplicator(config({ loginHost: '127.0.0.1' })).apply(evil);
+
+    expect(result.outcome).toBe('failed');
+    expect(result.reason).toMatch(/host is not/i);
+    // Nothing was even requested — the URL is vetted before the browser opens it.
+    expect(captured.hits).toEqual([]);
+    expect(captured.login).toBeUndefined();
+  }, 90_000);
+
   it('refuses to submit when an answer cannot be set', async () => {
-    captured = { submitted: false };
+    captured = { submitted: false, hits: [] };
     const profile = { ...loadApplicationProfile(), gender: 'Unlisted Option' };
     const result = await createApplicator(config({ profile })).apply(job());
 

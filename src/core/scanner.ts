@@ -12,7 +12,7 @@ import { fetchJobs, type FetchQuery } from './fetcher.js';
 import { matchJob } from './matcher.js';
 import type { Store } from './store.js';
 import { classifyPendingJobs } from './classify.js';
-import { runAutoApply, type AutoApplySummary } from './autoapply.js';
+import { armedAt, runAutoApply, type AutoApplySummary } from './autoapply.js';
 import type { Applicator } from './applicator.js';
 import type { JevClassifier } from './jev.js';
 import type { Notifier } from './notifier.js';
@@ -57,6 +57,14 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
 
   try {
     const isBaseline = store.countJobs() === 0;
+
+    // Establish the arming mark BEFORE any job is stored. Written later, it
+    // would be newer than the first_seen_at of everything found in this very
+    // scan, and since first_seen_at never changes those jobs would be skipped
+    // for good rather than just this once.
+    if (autoApply?.enabled && !isBaseline) {
+      armedAt(store, now());
+    }
     const query: FetchQuery = {
       lang: config.lang,
       type: config.type,

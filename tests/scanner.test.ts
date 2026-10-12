@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Store } from '../src/core/store.js';
 import { runScan } from '../src/core/scanner.js';
 import type { Notifier } from '../src/core/notifier.js';
+import type { Applicator, ApplyResult } from '../src/core/applicator.js';
+import { ARMED_AT_KEY } from '../src/core/autoapply.js';
 import type { TrackerConfig, StoredJob } from '../src/core/types.js';
 
 const config: TrackerConfig = {
@@ -14,8 +16,14 @@ const config: TrackerConfig = {
   notifyTo: [],
 };
 
-/** Build a fake API page response from a list of (id, title) tuples. */
-function apiPage(jobs: Array<{ id: string; title: string; category?: string }>) {
+/**
+ * Build a fake API page response. `year` adds the experience band the real
+ * API carries in content_categories; without it a job has no band and is
+ * never classified, so leave it off for tests that do not involve Jev.
+ */
+function apiPage(
+  jobs: Array<{ id: string; title: string; category?: string; year?: string }>,
+) {
   return {
     hits: jobs.map((j) => ({
       metas: [
@@ -26,7 +34,9 @@ function apiPage(jobs: Array<{ id: string; title: string; category?: string }>) 
         { name: 'content_info_2_value', value: 'United States, TX, Plano' },
         {
           name: 'content_categories',
-          value: `Category/${j.category ?? 'Sales'} Type/Regular Country/United States`,
+          value:
+            `Category/${j.category ?? 'Sales'} Type/Regular Country/United States` +
+            (j.year ? ` Year/${j.year}` : ''),
         },
         { name: 'content_start_datetime', value: '2026/07/02 03:07:05' },
       ],
@@ -161,5 +171,123 @@ describe('runScan', () => {
     });
     expect(res.matchedCount).toBe(1);
     expect(notifier.sent[0].map((j) => j.cardId)).toEqual(['9']);
+  });
+});
+
+describe('the scan that arms auto-apply', () => {
+  let store: Store;
+  beforeEach(() => {
+    store = new Store(':memory:');
+  });
+  afterEach(() => store.close());
+
+  const SUBMITTED: ApplyResult = { outcome: 'submitted', reason: null, screenshots: [] };
+
+  /** An applicator that records which jobs it was asked to apply to. */
+  function recordingApplicator() {
+    const seen: string[] = [];
+    const applicator: Applicator = {
+      configured: true,
+      async apply(j) {
+        seen.push(j.cardId);
+        return SUBMITTED;
+      },
+    };
+    return { applicator, seen };
+  }
+
+  it('applies to a job discovered in the very scan that armed it', async () => {
+    // Pre-existing row so this is not a baseline seed.
+    store.insertJob(
+      {
+        cardId: 'old',
+        title: 'Old Engineer',
+        url: '',
+        applyUrl: '',
+        location: '',
+        category: 'Information Technology',
+        products: '',
+        experience: '4 to 5 years',
+        postedAt: '2026-07-01T00:00:00.000Z',
+      },
+      true,
+      '2026-07-01T00:00:00.000Z',
+    );
+
+    const { applicator, seen } = recordingApplicator();
+    const jev = {
+      configured: true,
+      async classify() {
+        return 'entry' as const;
+      },
+      async classifyAll(values: string[]) {
+        return new Map(values.map((v) => [v, 'entry' as const]));
+      },
+    };
+
+    await runScan({
+      store,
+      notifier: mockNotifier(),
+      jev,
+      autoApply: {
+        applicator,
+        enabled: true,
+        maxPerRun: 3,
+        notifyTo: ['x@y.com'],
+      },
+      config,
+      fetchImpl: fetchReturning(
+        apiPage([
+          {
+            id: 'fresh',
+            title: 'Software Engineer',
+            category: 'Information Technology',
+            year: '0 to 3 years',
+          },
+        ]),
+      ),
+    });
+
+    // The mark exists, and the job found in this same scan was not skipped.
+    expect(store.getSetting(ARMED_AT_KEY)).toBeTruthy();
+    expect(seen).toEqual(['fresh']);
+  });
+
+  it('leaves the pre-existing backlog alone when it arms', async () => {
+    // Two old jobs already classified entry level, seen before arming.
+    for (const id of ['back1', 'back2']) {
+      store.insertJob(
+        {
+          cardId: id,
+          title: 'Software Engineer',
+          url: '',
+          applyUrl: '',
+          location: '',
+          category: 'Information Technology',
+          products: '',
+          experience: '0 to 3 years',
+          postedAt: '2026-07-01T00:00:00.000Z',
+        },
+        true,
+        '2026-07-01T00:00:00.000Z',
+      );
+      store.setClassification(id, true, '2026-07-01T00:00:00.000Z');
+    }
+
+    const { applicator, seen } = recordingApplicator();
+    await runScan({
+      store,
+      notifier: mockNotifier(),
+      autoApply: {
+        applicator,
+        enabled: true,
+        maxPerRun: 5,
+        notifyTo: ['x@y.com'],
+      },
+      config,
+      fetchImpl: fetchReturning(apiPage([])),
+    });
+
+    expect(seen).toEqual([]);
   });
 });

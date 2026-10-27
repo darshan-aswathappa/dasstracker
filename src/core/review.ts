@@ -50,14 +50,18 @@ function mentions(text: string, label: RegExp): boolean {
  * sections it never asked about. Answers it does show must match — a review
  * that states something other than the profile is the case worth refusing.
  */
-export function reviewProblems(pageText: string, profile: ApplicationProfile): string[] {
+export function reviewProblems(
+  pageText: string,
+  profile: ApplicationProfile,
+  resumeFileName: string,
+): string[] {
   const text = flatten(pageText);
   const problems: string[] = [];
 
   // The resume is the one thing that must be positively confirmed: submitting
   // with the wrong document attached is the costliest mistake available here.
-  if (!text.includes(profile.resumeFileName)) {
-    problems.push(`review does not list the resume ${profile.resumeFileName}`);
+  if (!text.includes(resumeFileName)) {
+    problems.push(`review does not list the resume ${resumeFileName}`);
   }
 
   const checks: Array<{ label: RegExp; expected: string; what: string }> = [

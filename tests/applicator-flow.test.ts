@@ -294,14 +294,18 @@ function job(): Job {
     category: 'Research & Development',
     products: '',
     experience: '0 to 3 years',
+    description: 'Build and ship machine learning models for the 3DEXPERIENCE platform.',
     postedAt: '2026-10-11T00:00:00.000Z',
   };
 }
 
+/** The resume an AI-classified job would carry. */
+const RESUME = loadApplicationProfile().resumes.ai;
+
 describe('applicator against a Taleo replica', () => {
   it('fills every step and reaches the Thank You page', async () => {
     captured = { submitted: false, hits: [] };
-    const result = await createApplicator(config()).apply(job());
+    const result = await createApplicator(config()).apply(job(), RESUME);
 
     expect(result.reason).toBeNull();
     expect(result.outcome).toBe('submitted');
@@ -341,7 +345,7 @@ describe('applicator against a Taleo replica', () => {
 
   it('stops on the review page in dry-run mode without submitting', async () => {
     captured = { submitted: false, hits: [] };
-    const result = await createApplicator(config({ dryRun: true })).apply(job());
+    const result = await createApplicator(config({ dryRun: true })).apply(job(), RESUME);
 
     expect(result.outcome).toBe('dry_run');
     expect(captured.submitted).toBe(false);
@@ -350,8 +354,7 @@ describe('applicator against a Taleo replica', () => {
 
   it('refuses to submit when the wanted resume is not on the account', async () => {
     captured = { submitted: false, hits: [] };
-    const profile = { ...loadApplicationProfile(), resumeFileName: 'Does_Not_Exist.pdf' };
-    const result = await createApplicator(config({ profile })).apply(job());
+    const result = await createApplicator(config()).apply(job(), 'Does_Not_Exist.pdf');
 
     expect(result.outcome).toBe('failed');
     expect(result.reason).toMatch(/not on the account/i);
@@ -360,7 +363,7 @@ describe('applicator against a Taleo replica', () => {
 
   it('reports uncertainty, not failure, when Submit lands but the confirmation does not', async () => {
     captured = { submitted: false, hits: [], swallowConfirmation: true };
-    const result = await createApplicator(config()).apply(job());
+    const result = await createApplicator(config()).apply(job(), RESUME);
 
     // The portal did receive the submission, so this must never be reported as
     // a plain failure: that is the status that makes a job eligible to retry.
@@ -376,7 +379,7 @@ describe('applicator against a Taleo replica', () => {
       applyUrl: `http://localhost:${new URL(base).port}/careersection/qa/jobapply.ftl?job=1`,
     };
     // Same server, different hostname: the credentials must not be typed.
-    const result = await createApplicator(config({ loginHost: '127.0.0.1' })).apply(evil);
+    const result = await createApplicator(config({ loginHost: '127.0.0.1' })).apply(evil, RESUME);
 
     expect(result.outcome).toBe('failed');
     expect(result.reason).toMatch(/host is not/i);
@@ -388,7 +391,7 @@ describe('applicator against a Taleo replica', () => {
   it('refuses to submit when an answer cannot be set', async () => {
     captured = { submitted: false, hits: [] };
     const profile = { ...loadApplicationProfile(), gender: 'Unlisted Option' };
-    const result = await createApplicator(config({ profile })).apply(job());
+    const result = await createApplicator(config({ profile })).apply(job(), RESUME);
 
     expect(result.outcome).toBe('failed');
     expect(result.reason).toMatch(/gender/i);
@@ -399,7 +402,7 @@ describe('applicator against a Taleo replica', () => {
 describe('the portal remembering a candidate', () => {
   it('submits from a pre-filled Review page reached straight after login', async () => {
     captured = { submitted: false, hits: [], jumpToReview: true };
-    const result = await createApplicator(config()).apply(job());
+    const result = await createApplicator(config()).apply(job(), RESUME);
 
     // No Continue was ever pressed: login landed on Review already filled in.
     expect(result.outcome).toBe('submitted');
@@ -413,7 +416,7 @@ describe('the portal remembering a candidate', () => {
     // The remembered answers are not ours: the page says Female, we say Male.
     const result = await createApplicator(
       config({ profile: { ...loadApplicationProfile(), gender: 'Male' } }),
-    ).apply(job());
+    ).apply(job(), RESUME);
 
     expect(result.outcome).toBe('failed');
     expect(result.reason).toMatch(/review does not match the profile/i);
@@ -422,8 +425,7 @@ describe('the portal remembering a candidate', () => {
 
   it('refuses a pre-filled Review carrying the wrong resume', async () => {
     captured = { submitted: false, hits: [], jumpToReview: true };
-    const profile = { ...loadApplicationProfile(), resumeFileName: 'Nireeksha_Huns_Resume.pdf' };
-    const result = await createApplicator(config({ profile })).apply(job());
+    const result = await createApplicator(config()).apply(job(), 'Nireeksha_Huns_Resume.pdf');
 
     expect(result.outcome).toBe('failed');
     expect(result.reason).toMatch(/does not list the resume/i);
@@ -434,7 +436,7 @@ describe('the portal remembering a candidate', () => {
 describe('the cookie dialog', () => {
   it('is dismissed with the private option, never Accept All', async () => {
     captured = { submitted: false, hits: [] };
-    await createApplicator(config()).apply(job());
+    await createApplicator(config()).apply(job(), RESUME);
 
     expect(captured.cookieChoice).toBe('necessary');
     expect(captured.cookieChoice).not.toBe('all');
@@ -448,7 +450,7 @@ describe('a flow that wanders off the portal', () => {
     const port = new URL(base).port;
     captured = { submitted: false, hits: [], detourHost: `http://localhost:${port}` };
 
-    const result = await createApplicator(config({ loginHost: '127.0.0.1' })).apply(job());
+    const result = await createApplicator(config({ loginHost: '127.0.0.1' })).apply(job(), RESUME);
 
     expect(result.outcome).toBe('failed');
     expect(result.reason).toMatch(/left 127\.0\.0\.1 mid-application|refusing to enter/i);
@@ -461,7 +463,7 @@ describe('a flow that wanders off the portal', () => {
 describe('the privacy agreement gate', () => {
   it('accepts it and carries on into the application', async () => {
     captured = { submitted: false, hits: [], privacyGate: true };
-    const result = await createApplicator(config()).apply(job());
+    const result = await createApplicator(config()).apply(job(), RESUME);
 
     expect(captured.consent).toBe('accept');
     expect(captured.consentLanguage).toBe('en'); // "English"
@@ -472,7 +474,7 @@ describe('the privacy agreement gate', () => {
   it('stops without clicking anything when the profile does not accept it', async () => {
     captured = { submitted: false, hits: [], privacyGate: true };
     const profile = { ...loadApplicationProfile(), acceptPrivacyAgreement: false };
-    const result = await createApplicator(config({ profile })).apply(job());
+    const result = await createApplicator(config({ profile })).apply(job(), RESUME);
 
     expect(result.outcome).toBe('failed');
     expect(result.reason).toMatch(/privacy agreement/i);
@@ -488,7 +490,7 @@ describe('controls rendered as links rather than buttons', () => {
     // SUBMIT / SAVE AS DRAFT are all anchors in this replica, as on the
     // real portal. getByRole('button') matches none of them.
     captured = { submitted: false, hits: [], privacyGate: true };
-    const result = await createApplicator(config()).apply(job());
+    const result = await createApplicator(config()).apply(job(), RESUME);
 
     expect(captured.consent).toBe('accept');
     expect(result.outcome).toBe('submitted');
@@ -499,7 +501,7 @@ describe('controls rendered as links rather than buttons', () => {
     captured = { submitted: false, hits: [], privacyGate: true };
     const profile = { ...loadApplicationProfile(), privacyLanguage: 'Klingon' };
     // The language is not fatal; the run should still get through.
-    const result = await createApplicator(config({ profile })).apply(job());
+    const result = await createApplicator(config({ profile })).apply(job(), RESUME);
     expect(result.outcome).toBe('submitted');
   }, 90_000);
 });
@@ -509,7 +511,7 @@ describe('a step whose answer is already correct', () => {
     // On the real portal the privacy page already shows English, and changing
     // it makes Taleo re-render the step — discarding the I ACCEPT click.
     captured = { submitted: false, hits: [], privacyAlreadyEnglish: true };
-    const result = await createApplicator(config()).apply(job());
+    const result = await createApplicator(config()).apply(job(), RESUME);
 
     expect(captured.langChanged).toBe('0');
     expect(captured.consent).toBe('accept');
@@ -518,7 +520,7 @@ describe('a step whose answer is already correct', () => {
 
   it('still changes it when it is on the wrong language', async () => {
     captured = { submitted: false, hits: [], privacyGate: true };
-    const result = await createApplicator(config()).apply(job());
+    const result = await createApplicator(config()).apply(job(), RESUME);
 
     expect(captured.consentLanguage).toBe('en');
     expect(result.outcome).toBe('submitted');
@@ -528,7 +530,7 @@ describe('a step whose answer is already correct', () => {
 describe('the attachments table posting back on every click', () => {
   it('reaches the wanted end state one toggle at a time', async () => {
     captured = { submitted: false, hits: [], attachRows: initialAttachments() };
-    const result = await createApplicator(config()).apply(job());
+    const result = await createApplicator(config()).apply(job(), RESUME);
 
     expect(result.outcome).toBe('submitted');
     // Resume was already ticked on the wanted row, so only Relevant needed a
@@ -554,7 +556,7 @@ describe('the attachments table posting back on every click', () => {
         { file: 'Nireeksha_Huns_Resume.pdf', relevant: false, resume: false },
       ],
     };
-    const result = await createApplicator(config()).apply(job());
+    const result = await createApplicator(config()).apply(job(), RESUME);
 
     expect(result.outcome).toBe('submitted');
     const rows = captured.attachRows ?? [];
@@ -578,7 +580,7 @@ describe('the requisition guard', () => {
       attachRows: initialAttachments(),
       bannerJob: '999999',
     };
-    const result = await createApplicator(config()).apply(job());
+    const result = await createApplicator(config()).apply(job(), RESUME);
 
     expect(result.outcome).toBe('failed');
     expect(result.reason).toMatch(/for job 999999, not 550021/);

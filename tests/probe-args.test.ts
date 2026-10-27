@@ -14,7 +14,14 @@ const err = (r: ReturnType<typeof parseArgs>) => {
 describe('parseArgs', () => {
   it('defaults to a dry run on the newest entry-level job', () => {
     const a = ok(parseArgs([]));
-    expect(a).toEqual({ target: null, submit: false, emailOnly: false, alert: false });
+    expect(a).toEqual({
+      target: null,
+      submit: false,
+      emailOnly: false,
+      alert: false,
+      byHand: false,
+      resume: null,
+    });
   });
 
   it('takes a card id or a URL', () => {
@@ -53,5 +60,32 @@ describe('parseArgs', () => {
     for (const argv of [['550021'], ['550021', '--email-only'], []]) {
       expect(ok(parseArgs(argv)).submit).toBe(false);
     }
+  });
+});
+
+describe('--resume', () => {
+  it('names which document to attach', () => {
+    expect(ok(parseArgs(['550021', '--resume', 'software'])).resume).toBe('software');
+    expect(ok(parseArgs(['550021', '--resume', 'ai'])).resume).toBe('ai');
+  });
+
+  it('does not swallow the job id as its value', () => {
+    expect(ok(parseArgs(['--resume', 'ai', '550021'])).target).toBe('550021');
+  });
+
+  it('refuses a resume that is not one of the two', () => {
+    expect(parseArgs(['550021', '--resume', 'cover-letter'])).toHaveProperty('error');
+    expect(parseArgs(['550021', '--resume'])).toHaveProperty('error');
+  });
+});
+
+describe('--by-hand', () => {
+  it('only makes sense alongside --email-only', () => {
+    expect(parseArgs(['550021', '--by-hand'])).toHaveProperty('error');
+    expect(ok(parseArgs(['550021', '--email-only', '--by-hand'])).byHand).toBe(true);
+  });
+
+  it('is not the same email as --alert', () => {
+    expect(parseArgs(['550021', '--email-only', '--alert', '--by-hand'])).toHaveProperty('error');
   });
 });

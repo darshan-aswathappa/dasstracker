@@ -4,6 +4,7 @@ import { runScan } from '../src/core/scanner.js';
 import type { Notifier } from '../src/core/notifier.js';
 import type { Applicator, ApplyResult } from '../src/core/applicator.js';
 import { ARMED_AT_KEY } from '../src/core/autoapply.js';
+import { loadApplicationProfile } from '../src/core/profile.js';
 import type { TrackerConfig, StoredJob } from '../src/core/types.js';
 
 const config: TrackerConfig = {
@@ -208,6 +209,7 @@ describe('the scan that arms auto-apply', () => {
         category: 'Information Technology',
         products: '',
         experience: '4 to 5 years',
+        description: '',
         postedAt: '2026-07-01T00:00:00.000Z',
       },
       true,
@@ -223,6 +225,9 @@ describe('the scan that arms auto-apply', () => {
       async classifyAll(values: string[]) {
         return new Map(values.map((v) => [v, 'entry' as const]));
       },
+      async classifyRole() {
+        return 'ai' as const;
+      },
     };
 
     await runScan({
@@ -231,6 +236,7 @@ describe('the scan that arms auto-apply', () => {
       jev,
       autoApply: {
         applicator,
+        profile: loadApplicationProfile(),
         enabled: true,
         maxPerRun: 3,
         notifyTo: ['x@y.com'],

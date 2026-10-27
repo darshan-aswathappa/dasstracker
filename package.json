@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "backfill": "tsx scripts/backfill-experience.ts",
+    "backfill:roles": "tsx scripts/backfill-roles.ts",
     "apply:probe": "tsx scripts/apply-probe.ts"
   },
   "dependencies": {

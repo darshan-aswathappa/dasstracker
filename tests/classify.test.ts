@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Store } from '../src/core/store.js';
-import { classifyPendingJobs } from '../src/core/classify.js';
-import type { EntryLevelVerdict, JevClassifier } from '../src/core/jev.js';
+import { classifyPendingJobs, classifyPendingRoles } from '../src/core/classify.js';
+import type { EntryLevelVerdict, JevClassifier, RoleVerdict } from '../src/core/jev.js';
 import type { Job } from '../src/core/types.js';
 
 function job(id: string, experience: string): Job {
@@ -14,6 +14,7 @@ function job(id: string, experience: string): Job {
     category: 'Research & Development',
     products: '',
     experience,
+    description: `What job ${id} involves.`,
     postedAt: '2026-07-02T03:00:00.000Z',
   };
 }
@@ -31,6 +32,9 @@ function stubJev(table: Record<string, EntryLevelVerdict>) {
       const out = new Map<string, EntryLevelVerdict>();
       for (const v of [...new Set(values)]) out.set(v, await this.classify(v));
       return out;
+    },
+    async classifyRole() {
+      return 'unknown';
     },
   };
   return { classifier, calls };
@@ -113,6 +117,114 @@ describe('classifyPendingJobs', () => {
     expect(n).toBe(0);
     expect(store.jobsNeedingClassification()).toHaveLength(1);
     expect(logs.join(' ')).toMatch(/502/);
+    store.close();
+  });
+});
+
+/** A classifier that answers the role question from a table of titles. */
+function stubRoleJev(table: Record<string, RoleVerdict>, failOn: string[] = []) {
+  const calls: string[] = [];
+  const classifier: JevClassifier = {
+    configured: true,
+    async classify() {
+      return 'unknown';
+    },
+    async classifyAll() {
+      return new Map();
+    },
+    async classifyRole(input) {
+      calls.push(input.title);
+      if (failOn.includes(input.title)) throw new Error('Jev HTTP 503');
+      return table[input.title] ?? 'unknown';
+    },
+  };
+  return { classifier, calls };
+}
+
+describe('classifyPendingRoles', () => {
+  it('records the verdict for each matched job', async () => {
+    const store = new Store(':memory:');
+    store.insertJob(job('1', '0 to 3 years'), true, 'now');
+    store.insertJob(job('2', '0 to 3 years'), true, 'now');
+    const { classifier, calls } = stubRoleJev({ 'Job 1': 'ai', 'Job 2': 'software' });
+
+    const decided = await classifyPendingRoles(store, classifier, () => 'at');
+
+    expect(decided).toBe(2);
+    expect(calls.sort()).toEqual(['Job 1', 'Job 2']);
+    const byId = new Map(store.recentJobs().map((j) => [j.cardId, j]));
+    expect(byId.get('1')?.roleKind).toBe('ai');
+    expect(byId.get('2')?.roleKind).toBe('software');
+    expect(byId.get('1')?.roleClassifiedAt).toBe('at');
+    store.close();
+  });
+
+  it('never asks about an unmatched job', async () => {
+    const store = new Store(':memory:');
+    store.insertJob(job('skip', '0 to 3 years'), false, 'now');
+    const { classifier, calls } = stubRoleJev({ 'Job skip': 'ai' });
+
+    await classifyPendingRoles(store, classifier, () => 'at');
+
+    expect(calls).toEqual([]);
+    store.close();
+  });
+
+  it('asks again once about a job it could not decide, then gives up', async () => {
+    const store = new Store(':memory:');
+    store.insertJob(job('1', '0 to 3 years'), true, 'now');
+    const { classifier, calls } = stubRoleJev({});
+
+    await classifyPendingRoles(store, classifier, () => 'at');
+    await classifyPendingRoles(store, classifier, () => 'at');
+    await classifyPendingRoles(store, classifier, () => 'at');
+
+    // Two attempts, then the job is left for a human rather than asked forever.
+    expect(calls).toEqual(['Job 1', 'Job 1']);
+    expect(store.recentJobs()[0].roleKind).toBeNull();
+    expect(store.recentJobs()[0].roleAttempts).toBe(2);
+    store.close();
+  });
+
+  it('counts a failed call as an attempt, so an outage surfaces', async () => {
+    const store = new Store(':memory:');
+    store.insertJob(job('1', '0 to 3 years'), true, 'now');
+    const { classifier } = stubRoleJev({}, ['Job 1']);
+
+    const decided = await classifyPendingRoles(store, classifier, () => 'at');
+
+    expect(decided).toBe(0);
+    expect(store.recentJobs()[0].roleAttempts).toBe(1);
+    store.close();
+  });
+
+  it('lets one failed posting cost only itself', async () => {
+    const store = new Store(':memory:');
+    store.insertJob(job('1', '0 to 3 years'), true, 'now');
+    store.insertJob(job('2', '0 to 3 years'), true, 'now');
+    const { classifier } = stubRoleJev({ 'Job 2': 'software' }, ['Job 1']);
+
+    const decided = await classifyPendingRoles(store, classifier, () => 'at');
+
+    expect(decided).toBe(1);
+    const byId = new Map(store.recentJobs().map((j) => [j.cardId, j]));
+    expect(byId.get('2')?.roleKind).toBe('software');
+    store.close();
+  });
+
+  it('does nothing when Jev is switched off', async () => {
+    const store = new Store(':memory:');
+    store.insertJob(job('1', '0 to 3 years'), true, 'now');
+    const { classifier, calls } = stubRoleJev({ 'Job 1': 'ai' });
+
+    const decided = await classifyPendingRoles(
+      store,
+      { ...classifier, configured: false },
+      () => 'at',
+    );
+
+    expect(decided).toBe(0);
+    expect(calls).toEqual([]);
     store.close();
   });
 });

@@ -12,6 +12,7 @@ function job(id: string, seenAt: string): Job {
     category: 'Research & Development',
     products: '',
     experience: '0 to 3 years',
+    description: 'Write software.',
     postedAt: seenAt,
   };
 }
@@ -25,10 +26,14 @@ describe('auto-apply eligibility', () => {
   });
   afterEach(() => store.close());
 
-  /** Insert a job and give it an entry-level verdict. */
+  /**
+   * Insert a job and give it both verdicts it needs to be applied to: entry
+   * level, and a role that names a resume.
+   */
   function entryLevel(id: string, seenAt: string, matched = true) {
     store.insertJob(job(id, seenAt), matched, seenAt);
     store.setClassification(id, true, seenAt);
+    store.setRoleClassification(id, 'ai', seenAt);
   }
 
   it('offers an entry-level matched job seen after arming', () => {
@@ -112,6 +117,27 @@ describe('auto-apply eligibility', () => {
     expect(store.jobsToAutoApply(ARMED, 3, 2)).toHaveLength(2);
   });
 
+  it('ignores a job whose role has not been decided yet', () => {
+    store.insertJob(job('norole', '2026-10-12T10:00:00.000Z'), true, '2026-10-12T10:00:00.000Z');
+    store.setClassification('norole', true, ARMED);
+    expect(store.jobsToAutoApply(ARMED)).toHaveLength(0);
+  });
+
+  it('ignores a job that is neither an AI nor a software role', () => {
+    store.insertJob(job('sales', '2026-10-12T10:00:00.000Z'), true, '2026-10-12T10:00:00.000Z');
+    store.setClassification('sales', true, ARMED);
+    store.setRoleClassification('sales', 'other', ARMED);
+    expect(store.jobsToAutoApply(ARMED)).toHaveLength(0);
+  });
+
+  it('offers a software role alongside an AI one', () => {
+    entryLevel('ai', '2026-10-12T10:00:00.000Z');
+    store.insertJob(job('swe', '2026-10-12T11:00:00.000Z'), true, '2026-10-12T11:00:00.000Z');
+    store.setClassification('swe', true, ARMED);
+    store.setRoleClassification('swe', 'software', ARMED);
+    expect(store.jobsToAutoApply(ARMED).map((j) => j.cardId).sort()).toEqual(['ai', 'swe']);
+  });
+
   it('counts applications by status', () => {
     entryLevel('1', '2026-10-12T10:00:00.000Z');
     store.recordApplication({
@@ -124,5 +150,69 @@ describe('auto-apply eligibility', () => {
     });
     expect(store.countApplications('submitted')).toBe(1);
     expect(store.countApplications('failed')).toBe(0);
+  });
+});
+
+describe('jobs that need applying to by hand', () => {
+  let store: Store;
+  beforeEach(() => {
+    store = new Store(':memory:');
+  });
+  afterEach(() => store.close());
+
+  /** An entry-level matched job seen after arming, with no role verdict yet. */
+  function unclassified(id: string, attempts = 0) {
+    const seenAt = '2026-10-12T10:00:00.000Z';
+    store.insertJob(job(id, seenAt), true, seenAt);
+    store.setClassification(id, true, seenAt);
+    for (let i = 0; i < attempts; i++) store.setRoleClassification(id, null, seenAt);
+  }
+
+  it('lists a job Jev ruled is neither kind of engineering', () => {
+    unclassified('sales');
+    store.setRoleClassification('sales', 'other', ARMED);
+    expect(store.jobsNeedingManualApply(ARMED).map((j) => j.cardId)).toEqual(['sales']);
+  });
+
+  it('leaves an undecided job alone until the retry is spent', () => {
+    unclassified('maybe', 1);
+    expect(store.jobsNeedingManualApply(ARMED)).toHaveLength(0);
+    store.setRoleClassification('maybe', null, ARMED); // second attempt
+    expect(store.jobsNeedingManualApply(ARMED).map((j) => j.cardId)).toEqual(['maybe']);
+  });
+
+  it('never lists a job the bot can apply to itself', () => {
+    unclassified('ai');
+    store.setRoleClassification('ai', 'ai', ARMED);
+    expect(store.jobsNeedingManualApply(ARMED)).toHaveLength(0);
+  });
+
+  it('keeps the backlog out, exactly as applying does', () => {
+    const old = '2026-10-01T00:00:00.000Z';
+    store.insertJob(job('old', old), true, old);
+    store.setClassification('old', true, old);
+    store.setRoleClassification('old', 'other', old);
+    expect(store.jobsNeedingManualApply(ARMED)).toHaveLength(0);
+  });
+
+  it('mentions a job once, not on every scan', () => {
+    unclassified('sales');
+    store.setRoleClassification('sales', 'other', ARMED);
+    store.markRoleAlerted('sales', ARMED);
+    expect(store.jobsNeedingManualApply(ARMED)).toHaveLength(0);
+  });
+
+  it('says nothing about a job an application was already attempted on', () => {
+    unclassified('sales');
+    store.setRoleClassification('sales', 'other', ARMED);
+    store.recordApplication({
+      cardId: 'sales',
+      status: 'failed',
+      attemptedAt: 'ts',
+      submittedAt: null,
+      reason: 'timeout',
+      screenshot: null,
+    });
+    expect(store.jobsNeedingManualApply(ARMED)).toHaveLength(0);
   });
 });

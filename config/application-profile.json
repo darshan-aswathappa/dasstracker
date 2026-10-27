@@ -9,7 +9,10 @@
   "race": [
     "Asian"
   ],
-  "resumeFileName": "Nireeksha_AI_Engineer.pdf",
+  "resumes": {
+    "ai": "Nireeksha_AI_Engineer.pdf",
+    "software": "Nireeksha_Huns_Resume_Dassault.pdf"
+  },
   "acceptPrivacyAgreement": true,
   "privacyLanguage": "English"
 }

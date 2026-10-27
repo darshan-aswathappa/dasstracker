@@ -9,6 +9,7 @@ import {
   parseHit,
   deriveApplyUrl,
   fetchJobs,
+  htmlToText,
 } from '../src/core/fetcher.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -167,5 +168,38 @@ describe('deriveApplyUrl', () => {
     expect(job?.applyUrl).toBe(
       'https://talentacquisition.3ds.com/careersection/qa/jobapply.ftl?job=549646&lang=en',
     );
+  });
+});
+
+describe('htmlToText', () => {
+  it('reduces the posting markup to the words in it', () => {
+    expect(htmlToText('<h3><strong>Role Description</strong></h3><p>Build&nbsp;things.</p>')).toBe(
+      'Role Description Build things.',
+    );
+  });
+
+  it('decodes the entities 3DS actually sends', () => {
+    expect(htmlToText('<p>R&amp;D &ndash; Dassault Syst&egrave;mes&rsquo; team</p>')).toBe(
+      'R&D Dassault Systèmes\u2019 team',
+    );
+  });
+
+  it('drops script and style bodies rather than reading them as prose', () => {
+    expect(htmlToText('<style>p{color:red}</style><p>Hello</p><script>x=1</script>')).toBe('Hello');
+  });
+
+  it('caps a runaway posting', () => {
+    expect(htmlToText(`<p>${'word '.repeat(5000)}</p>`).length).toBeLessThanOrEqual(8000);
+  });
+
+  it('is empty for a posting with no body', () => {
+    expect(htmlToText('')).toBe('');
+  });
+
+  it('pulls the real posting body out of the fixture', () => {
+    const [job] = parseResponse(fixture);
+    expect(job.description).toContain('Role Description');
+    expect(job.description).not.toContain('<');
+    expect(job.description).not.toContain('&amp;');
   });
 });

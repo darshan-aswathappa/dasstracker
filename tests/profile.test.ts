@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { parseApplicationProfile, loadApplicationProfile } from '../src/core/profile.js';
+import {
+  parseApplicationProfile,
+  loadApplicationProfile,
+  resumeFor,
+} from '../src/core/profile.js';
 
 const VALID = {
   hearAboutUs: 'Corporate Websites',
@@ -10,12 +14,18 @@ const VALID = {
   gender: 'Female',
   veteranStatus: 'Not a Protected Veteran',
   race: ['Asian'],
-  resumeFileName: 'Nireeksha_AI_Engineer.pdf',
+  resumes: {
+    ai: 'Nireeksha_AI_Engineer.pdf',
+    software: 'Nireeksha_Huns_Resume_Dassault.pdf',
+  },
 };
 
 describe('parseApplicationProfile', () => {
   it('accepts a complete profile', () => {
-    expect(parseApplicationProfile(VALID).resumeFileName).toBe('Nireeksha_AI_Engineer.pdf');
+    expect(parseApplicationProfile(VALID).resumes).toEqual({
+      ai: 'Nireeksha_AI_Engineer.pdf',
+      software: 'Nireeksha_Huns_Resume_Dassault.pdf',
+    });
   });
 
   it('rejects a missing required answer', () => {

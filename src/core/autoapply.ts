@@ -1,11 +1,15 @@
 /**
  * Decides which newly classified jobs get an application, and runs them.
  *
- * Three guards stand between a scan and an irreversible submission:
+ * Four guards stand between a scan and an irreversible submission:
  *   - the feature is off unless AUTO_APPLY_ENABLED is explicitly set;
  *   - only jobs first seen after the feature was armed are eligible, so
  *     switching it on never fires at the existing backlog;
- *   - a per-run cap bounds the damage if classification ever goes wrong.
+ *   - a per-run cap bounds the damage if classification ever goes wrong;
+ *   - a job is only applied to once Jev has said whether it is an AI or a
+ *     software role, which is what names the resume. Anything else — a role
+ *     that is neither, or one Jev would not commit to — is mailed to the
+ *     candidate to do by hand rather than applied to with a guessed resume.
  *
  * Applications run one at a time. A failure is recorded and retried on a later
  * scan up to the attempt cap; a success is recorded once and never repeated.
@@ -14,6 +18,7 @@
 import type { Store } from './store.js';
 import type { Applicator } from './applicator.js';
 import type { Notifier } from './notifier.js';
+import { resumeFor, type ApplicationProfile } from './profile.js';
 import type { StoredJob } from './types.js';
 
 /** Settings key holding the moment auto-apply was first armed. */
@@ -23,6 +28,8 @@ export interface AutoApplyDeps {
   store: Store;
   applicator: Applicator;
   notifier: Notifier;
+  /** Names the resume each kind of role gets. */
+  profile: ApplicationProfile;
   /** Who to tell when an application goes through. */
   notifyTo: string[];
   enabled: boolean;
@@ -39,6 +46,8 @@ export interface AutoApplySummary {
   dryRun: number;
   /** Submitted but unconfirmed — needs a human to check the portal. */
   uncertain: number;
+  /** Left alone and mailed about: no resume could be chosen for them. */
+  handedOver: number;
 }
 
 /**
@@ -63,6 +72,8 @@ export interface ApplyOneDeps {
   applicator: Applicator;
   notifier: Notifier;
   notifyTo: string[];
+  /** The resume to attach, already chosen for this job. */
+  resumeFileName: string;
   maxAttempts?: number;
   now?: () => Date;
   log?: (msg: string) => void;
@@ -91,7 +102,7 @@ export async function applyToJob(deps: ApplyOneDeps, job: StoredJob): Promise<Ap
     return 'skipped';
   }
 
-  const result = await applicator.apply(job);
+  const result = await applicator.apply(job, deps.resumeFileName);
   const screenshot = result.screenshots.at(-1) ?? null;
 
   store.recordApplication({
@@ -116,7 +127,7 @@ export async function applyToJob(deps: ApplyOneDeps, job: StoredJob): Promise<Ap
 
 /** Apply to everything eligible, up to the per-run cap. */
 export async function runAutoApply(deps: AutoApplyDeps): Promise<AutoApplySummary> {
-  const { store, applicator, notifier, notifyTo, enabled, maxPerRun } = deps;
+  const { store, applicator, notifier, notifyTo, profile, enabled, maxPerRun } = deps;
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? (() => {});
   const summary: AutoApplySummary = {
@@ -125,6 +136,7 @@ export async function runAutoApply(deps: AutoApplyDeps): Promise<AutoApplySummar
     failed: 0,
     dryRun: 0,
     uncertain: 0,
+    handedOver: 0,
   };
 
   if (!enabled) return summary;
@@ -134,18 +146,34 @@ export async function runAutoApply(deps: AutoApplyDeps): Promise<AutoApplySummar
   }
 
   const since = armedAt(store, now());
+
+  // Hand over what the bot will not apply to first: those jobs need nothing
+  // from the browser, and doing them before the slow part means an
+  // applicator fault cannot swallow the email that explains the skip.
+  summary.handedOver = await handOverUnclassified(deps, since, now, log);
+
   const pending = store.jobsToAutoApply(since, deps.maxAttempts ?? 3, maxPerRun);
   if (pending.length === 0) return summary;
 
   log(`Auto-apply: ${pending.length} entry-level job(s) to apply to.`);
 
   for (const job of pending) {
+    // The store only offers jobs with a role verdict, so this always names a
+    // resume; the guard is here because an unnamed one must never be guessed.
+    const resumeFileName = job.roleKind ? resumeFor(profile, job.roleKind) : null;
+    if (!resumeFileName) {
+      log(`Auto-apply: ${job.cardId} has no resume for role "${job.roleKind}"; skipping.`);
+      continue;
+    }
+
+    log(`Auto-apply: ${job.cardId} is a ${job.roleKind} role — attaching ${resumeFileName}.`);
     const outcome = await applyToJob(
       {
         store,
         applicator,
         notifier,
         notifyTo,
+        resumeFileName,
         maxAttempts: deps.maxAttempts,
         now,
         log,
@@ -163,9 +191,62 @@ export async function runAutoApply(deps: AutoApplyDeps): Promise<AutoApplySummar
 
   log(
     `Auto-apply done: attempted=${summary.attempted} submitted=${summary.submitted} ` +
-      `failed=${summary.failed} dryRun=${summary.dryRun} uncertain=${summary.uncertain}`,
+      `failed=${summary.failed} dryRun=${summary.dryRun} uncertain=${summary.uncertain} ` +
+      `handedOver=${summary.handedOver}`,
   );
   return summary;
+}
+
+/** Why a job was handed to a human rather than applied to. */
+function handoverReason(job: StoredJob): string {
+  return job.roleKind === 'other'
+    ? 'This is neither an AI nor a software engineering role, so neither resume on ' +
+        'the account is the right one to send.'
+    : 'The role could not be classified as AI or software engineering even after a ' +
+        'retry, so there was no way to tell which resume to attach.';
+}
+
+/**
+ * Mail the candidate about every eligible job the bot will not apply to, and
+ * record that it did so.
+ *
+ * The mark is written only after the mail goes out, so a send that fails is
+ * retried on the next scan rather than lost. Each job is independent: one
+ * failed send must not stop the others.
+ */
+async function handOverUnclassified(
+  deps: AutoApplyDeps,
+  since: string,
+  now: () => Date,
+  log: (msg: string) => void,
+): Promise<number> {
+  const { store, notifier, notifyTo } = deps;
+  const jobs = store.jobsNeedingManualApply(since, 2, deps.maxPerRun);
+  if (jobs.length === 0) return 0;
+
+  if (!notifier.configured) {
+    log(
+      `${jobs.length} job(s) need applying to by hand, but email is not configured ` +
+        'to say so.',
+    );
+    return 0;
+  }
+
+  let sent = 0;
+  for (const job of jobs) {
+    try {
+      await notifier.sendApplyByHand(job, notifyTo, handoverReason(job));
+      store.markRoleAlerted(job.cardId, now().toISOString());
+      sent++;
+      log(`Handed "${job.title.trim()}" (${job.cardId}) over to be applied to by hand.`);
+    } catch (err) {
+      log(
+        `Could not mail the apply-by-hand notice for ${job.cardId}: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  return sent;
 }
 
 /** Tell the recipients an application needs checking by hand. */

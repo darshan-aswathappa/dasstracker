@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { buildAppliedEmail, applyNotifyList } from '../src/core/notifier.js';
+import {
+  buildAppliedEmail,
+  buildApplyByHandEmail,
+  applyNotifyList,
+} from '../src/core/notifier.js';
 import type { StoredJob } from '../src/core/types.js';
 
 const job: StoredJob = {
@@ -15,8 +19,13 @@ const job: StoredJob = {
   firstSeenAt: '2026-10-12T15:00:00.000Z',
   matched: true,
   notifiedAt: null,
+  description: 'Build models for BIOVIA.',
   entryLevel: true,
   classifiedAt: '2026-10-12T15:15:03.596Z',
+  roleKind: 'ai',
+  roleClassifiedAt: '2026-10-12T15:15:04.000Z',
+  roleAttempts: 1,
+  roleAlertedAt: null,
 };
 
 describe('buildAppliedEmail', () => {
@@ -79,5 +88,33 @@ describe('applyNotifyList', () => {
 
   it('falls back to the defaults when the override is blank', () => {
     expect(applyNotifyList({ APPLY_NOTIFY_TO: '   ' })).toHaveLength(2);
+  });
+});
+
+describe('buildApplyByHandEmail', () => {
+  const reason = 'This is neither an AI nor a software engineering role.';
+
+  it('names the job and gives the link to finish it', () => {
+    const mail = buildApplyByHandEmail(job, reason);
+    expect(mail.subject).toBe('Apply by hand: AI Scientific Software Engineer - Marie');
+    expect(mail.text).toContain(reason);
+    expect(mail.text).toContain(job.applyUrl);
+    expect(mail.html).toContain(job.applyUrl);
+  });
+
+  it('is unmistakable that nothing was submitted or left half-done', () => {
+    const mail = buildApplyByHandEmail(job, reason);
+    expect(mail.text).toMatch(/Nothing was submitted/i);
+    expect(mail.text).not.toMatch(/applied to the job successfully/i);
+  });
+
+  it('says it will not repeat itself', () => {
+    expect(buildApplyByHandEmail(job, reason).text).toMatch(/only email you will get/i);
+  });
+
+  it('marks a preview, so a test never reads as a real skip', () => {
+    const mail = buildApplyByHandEmail(job, reason, true);
+    expect(mail.subject).toContain('[test]');
+    expect(mail.text).toMatch(/THIS IS A TEST/);
   });
 });

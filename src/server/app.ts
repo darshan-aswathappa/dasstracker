@@ -80,6 +80,7 @@ export function createApp(env: NodeJS.ProcessEnv = process.env): AppContext {
       jev: buildJev(),
       autoApply: {
         applicator: buildApplicator(),
+        profile,
         enabled: autoApplyArmed(),
         maxPerRun: maxApplicationsPerScan(env),
         notifyTo: applyNotifyList(env),

@@ -147,6 +147,19 @@ button:disabled { opacity: 0.4; cursor: default; }
   font-weight: 600;
 }
 
+/* The role verdict picks the resume, so AI and SWE are worth telling apart at
+   a glance; "by hand" is the one that needs the reader to do something. */
+.badge.role-ai,
+.badge.role-swe {
+  color: var(--text);
+  border-color: var(--line);
+}
+
+.badge.role-other {
+  color: var(--red);
+  border-color: var(--red);
+}
+
 .badge.applied {
   color: var(--blue);
   border-color: var(--blue);

@@ -26,7 +26,14 @@ export function registerRoutes(
         .filter((a) => a.status === 'submitted')
         .map((a) => a.cardId),
     );
-    return { jobs: jobs.map((j) => ({ ...j, applied: applied.has(j.cardId) })) };
+    // The posting body runs to thousands of characters and nothing in the UI
+    // shows it; sending 200 of them would be most of the response.
+    return {
+      jobs: jobs.map(({ description: _description, ...job }) => ({
+        ...job,
+        applied: applied.has(job.cardId),
+      })),
+    };
   });
 
   // Current config (no secrets).
@@ -76,6 +83,7 @@ export function registerRoutes(
       whatsappConfigured: ctx.buildWhatsApp().configured,
       jevConfigured: ctx.buildJev().configured,
       classification: ctx.store.classificationCounts(),
+      roles: ctx.store.roleCounts(),
       autoApply: {
         armed: ctx.autoApplyArmed(),
         credentialed: ctx.buildApplicator().configured,
@@ -116,10 +124,15 @@ export function registerRoutes(
           experience: '0 to 3 years',
           postedAt: new Date().toISOString(),
           firstSeenAt: new Date().toISOString(),
+          description: '',
           matched: true,
           notifiedAt: null,
           entryLevel: true,
           classifiedAt: new Date().toISOString(),
+          roleKind: 'ai',
+          roleClassifiedAt: new Date().toISOString(),
+          roleAttempts: 1,
+          roleAlertedAt: null,
         },
       ]);
       reply.send({ ok: true });

@@ -24,6 +24,7 @@ const job: Job = {
   category: 'Research & Development',
   products: '',
   experience: '0 to 3 years',
+  description: 'Build machine learning models.',
   postedAt: '2026-10-11T00:00:00.000Z',
 };
 
@@ -112,7 +113,7 @@ describe('createApplicator without credentials', () => {
   it('reports itself unconfigured and refuses to run', async () => {
     const applicator = createApplicator(null);
     expect(applicator.configured).toBe(false);
-    const result = await applicator.apply(job);
+    const result = await applicator.apply(job, profile.resumes.ai);
     expect(result.outcome).toBe('failed');
     expect(result.reason).toMatch(/not configured/i);
   });

@@ -545,7 +545,12 @@ const I_ACCEPT = ['^i\\s*accept$'];
 
 export interface Applicator {
   configured: boolean;
-  apply(job: Job): Promise<ApplyResult>;
+  /**
+   * Apply to one job with one named resume. The resume is a parameter rather
+   * than a profile field because which one goes out depends on the job: the
+   * caller has classified it, and this is where that decision is carried out.
+   */
+  apply(job: Job, resumeFileName: string): Promise<ApplyResult>;
 }
 
 /** Build an applicator. A null config yields a disabled, no-op applicator. */
@@ -569,7 +574,15 @@ export function createApplicator(
 
   const open = launch ?? (async () => (await import('playwright')).chromium.launch({ headless: config.headless }));
 
-  async function apply(job: Job): Promise<ApplyResult> {
+  async function apply(job: Job, resumeFileName: string): Promise<ApplyResult> {
+    const resume = resumeFileName.trim();
+    if (!resume) {
+      return {
+        outcome: 'failed',
+        reason: 'no resume was named for this job, so nothing was attempted',
+        screenshots: [],
+      };
+    }
     // These capture the whole application — name, phone, email, answers — and
     // this box is shared, so keep them readable only by the owning account.
     mkdirSync(config!.screenshotDir, { recursive: true, mode: 0o700 });
@@ -785,9 +798,9 @@ export function createApplicator(
 
           case 'attachments': {
             const rows = await attachmentState(page);
-            if (findResumeRow(rows.map((r) => r.file), p.resumeFileName) === -1) {
+            if (findResumeRow(rows.map((r) => r.file), resume) === -1) {
               return await fail(
-                `resume "${p.resumeFileName}" is not on the account; found: ${
+                `resume "${resume}" is not on the account; found: ${
                   rows.map((r) => r.file).join(', ') || 'none'
                 }`,
               );
@@ -796,7 +809,7 @@ export function createApplicator(
             // Exactly one file carries both ticks. Toggling one box makes the
             // portal re-render the table, so do one, let it settle, re-read,
             // and come back for the next rather than batching them.
-            const wantedState = (file: string) => file === p.resumeFileName;
+            const wantedState = (file: string) => file === resume;
             let settled = false;
             for (let t = 0; t < MAX_TOGGLES && !settled; t++) {
               const current = await attachmentState(page);
@@ -822,17 +835,17 @@ export function createApplicator(
             }
 
             const finalRows = await attachmentState(page);
-            const chosen = finalRows.find((r) => r.file === p.resumeFileName);
+            const chosen = finalRows.find((r) => r.file === resume);
             if (!chosen?.relevant || !chosen?.resume) {
               return await fail(
-                `could not tick Relevant and Resume for ${p.resumeFileName}; the table reads: ` +
+                `could not tick Relevant and Resume for ${resume}; the table reads: ` +
                   finalRows
                     .map((r) => `${r.file}[rel=${r.relevant}, res=${r.resume}]`)
                     .join(' | '),
               );
             }
             const extra = finalRows.filter(
-              (r) => r.file !== p.resumeFileName && (r.relevant || r.resume),
+              (r) => r.file !== resume && (r.relevant || r.resume),
             );
             if (extra.length > 0) {
               return await fail(
@@ -849,7 +862,7 @@ export function createApplicator(
           case 'review': {
             // Whoever filled this in — us this run, or the portal from a past
             // application — this page is what gets submitted, so check it.
-            const problems = reviewProblems(body, p);
+            const problems = reviewProblems(body, p, resume);
             if (problems.length > 0) {
               return await fail(`review does not match the profile: ${problems.join('; ')}`);
             }

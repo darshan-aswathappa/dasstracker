@@ -56,6 +56,11 @@ describe('migrating a pre-experience database', () => {
     expect(row.experience).toBe('');
     expect(row.entryLevel).toBeNull();
     expect(row.classifiedAt).toBeNull();
+    expect(row.description).toBe('');
+    expect(row.roleKind).toBeNull();
+    expect(row.roleClassifiedAt).toBeNull();
+    expect(row.roleAttempts).toBe(0);
+    expect(row.roleAlertedAt).toBeNull();
     store.close();
   });
 
@@ -78,6 +83,24 @@ describe('migrating a pre-experience database', () => {
     const store = new Store(oldDbPath());
     expect(store.jobsMissingExperience().map((j) => j.cardId)).toEqual(['546496']);
     expect(store.jobsNeedingClassification()).toHaveLength(0);
+    // The row is matched, so the role backfill will pick it up.
+    expect(store.jobsNeedingRoleClassification().map((j) => j.cardId)).toEqual(['546496']);
     store.close();
+  });
+
+  it('carries a role verdict across a reopen', () => {
+    const path = oldDbPath();
+    const first = new Store(path);
+    first.setDescription('546496', 'Lead the product.');
+    first.setRoleClassification('546496', 'other', '2026-10-27T00:00:00.000Z');
+    first.close();
+
+    const second = new Store(path);
+    const [row] = second.recentJobs();
+    expect(row.description).toBe('Lead the product.');
+    expect(row.roleKind).toBe('other');
+    expect(row.roleAttempts).toBe(1);
+    expect(second.jobsNeedingRoleClassification()).toHaveLength(0);
+    second.close();
   });
 });

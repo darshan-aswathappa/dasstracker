@@ -59,6 +59,16 @@ function renderJob(j) {
   // Only entry level earns a badge; everything else just shows its band.
   const entry = j.entryLevel === true ? '<span class="badge entry">ENTRY LEVEL</span>' : '';
   const applied = j.applied ? '<span class="badge applied">APPLIED</span>' : '';
+  // What Jev made of the role, which is what decides the resume an
+  // application carries. Undecided jobs show nothing rather than a guess.
+  const role =
+    j.roleKind === 'ai'
+      ? '<span class="badge role-ai">AI</span>'
+      : j.roleKind === 'software'
+        ? '<span class="badge role-swe">SWE</span>'
+        : j.roleKind === 'other'
+          ? '<span class="badge role-other">BY HAND</span>'
+          : '';
   const experience = j.experience
     ? `<span class="exp">${esc(j.experience)}</span>`
     : '';
@@ -76,6 +86,7 @@ function renderJob(j) {
       <div class="job-foot">
         ${j.applyUrl ? `<a href="${esc(j.applyUrl)}" target="_blank" rel="noopener">Apply →</a>` : ''}
         ${entry}
+        ${role}
         ${applied}
         ${notified}
       </div>

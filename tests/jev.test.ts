@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   jevConfigFromEnv,
   buildDecisionRequest,
+  buildRoleRequest,
+  roleFromAnswers,
   verdictFromAnswers,
   createJevClassifier,
   ENTRY_LEVEL_MAX_YEARS,
@@ -131,5 +133,101 @@ describe('createJevClassifier', () => {
     expect(calls).toBe(2);
     expect(out.get('0 to 3 years')).toBe('entry');
     expect(out.size).toBe(2);
+  });
+});
+
+/** A role answer block with the given probabilities. */
+function roleAnswer(ai: number, software: number, other = 0) {
+  return {
+    answers: {
+      role_kind: {
+        type: 'choice',
+        choice: 'ai',
+        probabilities: { ai, software, other },
+      },
+    },
+  };
+}
+
+describe('buildRoleRequest', () => {
+  const input = {
+    title: 'AI/ML Developer',
+    category: 'Research & Development',
+    description: 'Train and deploy models on the 3DEXPERIENCE platform.',
+  };
+
+  it('carries the title, category and body it is judging', () => {
+    const req = buildRoleRequest(input, 'typesafe/jev-1.13');
+    expect(req.model).toBe('typesafe/jev-1.13');
+    expect(req.state.title).toBe('AI/ML Developer');
+    expect(req.state.category).toBe('Research & Development');
+    expect(req.state.description).toContain('3DEXPERIENCE');
+  });
+
+  it('offers exactly the three kinds the resumes are keyed on', () => {
+    const req = buildRoleRequest(input, 'm');
+    expect(Object.keys(req.questions.role_kind.criteria).sort()).toEqual([
+      'ai',
+      'other',
+      'software',
+    ]);
+  });
+
+  it('trims a long posting rather than sending the whole thing', () => {
+    const req = buildRoleRequest({ ...input, description: 'x'.repeat(10_000) }, 'm');
+    expect(req.state.description.length).toBeLessThanOrEqual(4000);
+  });
+});
+
+describe('roleFromAnswers', () => {
+  it('reads each kind when it is confident enough', () => {
+    expect(roleFromAnswers(roleAnswer(0.9, 0.05, 0.05).answers)).toBe('ai');
+    expect(roleFromAnswers(roleAnswer(0.1, 0.85, 0.05).answers)).toBe('software');
+    expect(roleFromAnswers(roleAnswer(0.1, 0.2, 0.7).answers)).toBe('other');
+  });
+
+  it('refuses to pick a side it is not confident about', () => {
+    // A near-tie decides nothing: the wrong resume is worse than no application.
+    expect(roleFromAnswers(roleAnswer(0.45, 0.45, 0.1).answers)).toBe('unknown');
+    expect(roleFromAnswers(roleAnswer(0.59, 0.41).answers)).toBe('unknown');
+  });
+
+  it('throws on a response shape it does not recognise', () => {
+    expect(() => roleFromAnswers({} as never)).toThrow(/role_kind/);
+  });
+});
+
+describe('classifyRole', () => {
+  it('asks Jev and reads back the verdict', async () => {
+    const jev = createJevClassifier(
+      { apiKey: 'k', model: 'm', url: 'https://x' },
+      fakeFetch(roleAnswer(0.05, 0.9, 0.05)),
+    );
+    expect(
+      await jev.classifyRole({ title: 'Cloud Engineer', category: 'IT', description: '' }),
+    ).toBe('software');
+  });
+
+  it('does not spend a call on a posting with no title', async () => {
+    let called = false;
+    const jev = createJevClassifier({ apiKey: 'k', model: 'm', url: 'https://x' }, (async () => {
+      called = true;
+      throw new Error('should not be called');
+    }) as unknown as typeof fetch);
+
+    expect(await jev.classifyRole({ title: '  ', category: 'IT', description: 'x' })).toBe(
+      'unknown',
+    );
+    expect(called).toBe(false);
+  });
+
+  it('surfaces an HTTP failure rather than reading it as a verdict', async () => {
+    const jev = createJevClassifier(
+      { apiKey: 'k', model: 'm', url: 'https://x' },
+      fakeFetch({ error: 'nope' }, 500),
+    );
+    await expect(
+      jev.classifyRole({ title: 'AI Engineer', category: 'R&D', description: '' }),
+    ).rejects.toThrow(/500/);
   });
 });

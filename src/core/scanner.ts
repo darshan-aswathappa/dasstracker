@@ -11,9 +11,10 @@
 import { fetchJobs, type FetchQuery } from './fetcher.js';
 import { matchJob } from './matcher.js';
 import type { Store } from './store.js';
-import { classifyPendingJobs } from './classify.js';
+import { classifyPendingJobs, classifyPendingRoles } from './classify.js';
 import { armedAt, runAutoApply, type AutoApplySummary } from './autoapply.js';
 import type { Applicator } from './applicator.js';
+import type { ApplicationProfile } from './profile.js';
 import type { JevClassifier } from './jev.js';
 import type { Notifier } from './notifier.js';
 import type { WhatsAppNotifier } from './whatsapp.js';
@@ -29,6 +30,8 @@ export interface ScanDeps {
   /** Optional auto-apply stage; only acts when explicitly armed. */
   autoApply?: {
     applicator: Applicator;
+    /** Names the resume each kind of role gets. */
+    profile: ApplicationProfile;
     enabled: boolean;
     maxPerRun: number;
     notifyTo: string[];
@@ -99,6 +102,10 @@ export async function runScan(deps: ScanDeps): Promise<ScanResult> {
     // design: a Jev outage leaves jobs unbadged but must not stall a scan.
     if (jev) {
       await classifyPendingJobs(store, jev, () => now().toISOString(), log);
+      // And decide what kind of role each one is, which is what names the
+      // resume an application carries. Runs before auto-apply for that
+      // reason: a job with no verdict yet simply waits for the next scan.
+      await classifyPendingRoles(store, jev, () => now().toISOString(), log);
     }
 
     // Apply before the digest so a submitted job is already on record by the
@@ -186,6 +193,7 @@ async function runAutoApplyStage(
     return await runAutoApply({
       store: deps.store,
       applicator: autoApply.applicator,
+      profile: autoApply.profile,
       notifier: deps.notifier,
       notifyTo: autoApply.notifyTo,
       enabled: autoApply.enabled,

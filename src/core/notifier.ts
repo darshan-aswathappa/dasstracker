@@ -25,6 +25,8 @@ export interface Notifier {
   sendApplied(job: StoredJob, to: string[], preview?: boolean): Promise<void>;
   /** Flag an application that was submitted but never confirmed. */
   sendApplyAlert(job: StoredJob, to: string[], reason: string, preview?: boolean): Promise<void>;
+  /** Hand a job back to a human, with why the bot would not apply to it. */
+  sendApplyByHand(job: StoredJob, to: string[], reason: string, preview?: boolean): Promise<void>;
   verify(): Promise<void>;
   readonly configured: boolean;
 }
@@ -217,6 +219,74 @@ export function buildAppliedEmail(
   return { subject, text, html };
 }
 
+/**
+ * Subject and body for a job the bot deliberately left alone.
+ *
+ * It carries the apply link rather than just the posting, because the only
+ * thing left to do is open it: everything else about the job was already
+ * decided — it is entry level and it matched — and the one open question is
+ * which resume belongs on it.
+ */
+export function buildApplyByHandEmail(
+  job: StoredJob,
+  reason: string,
+  preview = false,
+): { subject: string; text: string; html: string } {
+  const title = job.title.trim();
+  const subject = `${preview ? '[test] ' : ''}Apply by hand: ${title}`;
+  const text = [
+    ...(preview ? ['THIS IS A TEST. No job was skipped and nothing was submitted.', ''] : []),
+    `DassTracker did not apply to this entry-level job, because it could not tell`,
+    `which resume belongs on it.`,
+    ``,
+    `Why:        ${reason}`,
+    ``,
+    `Title:      ${title}`,
+    `Location:   ${job.location || 'n/a'}`,
+    `Category:   ${job.category || 'n/a'}`,
+    `Experience: ${job.experience || 'n/a'}`,
+    `Posting:    ${job.url}`,
+    `Apply:      ${job.applyUrl}`,
+    ``,
+    `Nothing was submitted and nothing was left half-filled on the portal.`,
+    `This is the only email you will get about this job.`,
+  ].join('\n');
+
+  const html = `
+    <div style="font-family:Arial,Helvetica,sans-serif;max-width:640px;">
+      ${
+        preview
+          ? '<p style="background:#f3e1dd;border:1px solid #c0362c;color:#a52d24;' +
+            'padding:8px 12px;font-size:13px;font-weight:600;">' +
+            escapeHtml('THIS IS A TEST. No job was skipped and nothing was submitted.') +
+            '</p>'
+          : ''
+      }
+      <h2 style="font-size:17px;color:#111;">This one needs applying to by hand</h2>
+      <div style="border-left:3px solid #a8843f;padding:8px 14px;margin:0 0 14px;">
+        <div style="font-size:15px;font-weight:600;color:#111;">
+          <a href="${escapeHtml(job.url)}" style="color:#0870d3;text-decoration:none;">${escapeHtml(title)}</a>
+        </div>
+        <div style="font-size:13px;color:#444;margin-top:4px;">
+          ${escapeHtml(job.location || 'n/a')} &nbsp;·&nbsp; ${escapeHtml(job.category || 'n/a')}
+        </div>
+        <div style="font-size:12px;color:#888;margin-top:2px;">
+          Experience level: ${escapeHtml(job.experience || 'n/a')}
+        </div>
+      </div>
+      <p style="font-size:13px;color:#444;">${escapeHtml(reason)}</p>
+      <p style="font-size:13px;color:#444;">
+        <a href="${escapeHtml(job.applyUrl)}" style="color:#0870d3;">Open the application &rarr;</a>
+      </p>
+      <p style="font-size:11px;color:#aaa;margin-top:20px;">
+        Nothing was submitted and nothing was left half-filled on the portal.
+        This is the only email you will get about this job.
+      </p>
+    </div>`;
+
+  return { subject, text, html };
+}
+
 /** Create a Gmail-backed notifier. */
 export function createNotifier(config: MailerConfig | null): Notifier {
   if (!config) {
@@ -229,6 +299,9 @@ export function createNotifier(config: MailerConfig | null): Notifier {
         throw new Error('Email not configured (set GMAIL_USER and GMAIL_APP_PASSWORD).');
       },
       async sendApplyAlert() {
+        throw new Error('Email not configured (set GMAIL_USER and GMAIL_APP_PASSWORD).');
+      },
+      async sendApplyByHand() {
         throw new Error('Email not configured (set GMAIL_USER and GMAIL_APP_PASSWORD).');
       },
       async verify() {
@@ -310,6 +383,18 @@ export function createNotifier(config: MailerConfig | null): Notifier {
               portal before applying again &mdash; DassTracker will not retry it on its own.
             </p>
           </div>`,
+      });
+    },
+    async sendApplyByHand(job: StoredJob, to: string[], reason: string, preview = false) {
+      const recipients = parseEmailList(to);
+      if (recipients.length === 0) return;
+      const { subject, text, html } = buildApplyByHandEmail(job, reason, preview);
+      await getTransport().sendMail({
+        from: `DassTracker <${config.user}>`,
+        to: recipients,
+        subject,
+        text,
+        html,
       });
     },
     async sendApplied(job: StoredJob, to: string[], preview = false) {

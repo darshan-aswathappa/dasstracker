@@ -19,8 +19,15 @@
  * --email-only sends the notification and nothing else: no browser, no portal,
  * no database write, so the mail can be read before anything depends on it.
  *
- *   npm run apply:probe -- 550021 --email-only           # the "Applied" mail
- *   npm run apply:probe -- 550021 --email-only --alert   # the "check by hand" one
+ *   npm run apply:probe -- 550021 --email-only            # the "Applied" mail
+ *   npm run apply:probe -- 550021 --email-only --alert    # the "check by hand" one
+ *   npm run apply:probe -- 550021 --email-only --by-hand  # the "apply by hand" one
+ *
+ * The resume comes from the job's role verdict, exactly as an unattended run
+ * would pick it. --resume overrides that, for probing a job Jev has not ruled
+ * on yet or for checking the other document attaches cleanly.
+ *
+ *   npm run apply:probe -- 550021 --resume software
  */
 
 import { realpathSync } from 'node:fs';
@@ -30,16 +37,23 @@ import { createApp } from '../src/server/app.js';
 import { createApplicator, applicatorConfigFromEnv } from '../src/core/applicator.js';
 import { applyToJob } from '../src/core/autoapply.js';
 import { applyNotifyList } from '../src/core/notifier.js';
-import { loadApplicationProfile } from '../src/core/profile.js';
+import { loadApplicationProfile, resumeFor } from '../src/core/profile.js';
 import type { StoredJob } from '../src/core/types.js';
 
-const FLAGS = ['--submit', '--email-only', '--alert'] as const;
+const FLAGS = ['--submit', '--email-only', '--alert', '--by-hand'] as const;
+const VALUED_FLAGS = ['--resume'] as const;
+const RESUME_KINDS = ['ai', 'software'] as const;
+
+type ResumeKind = (typeof RESUME_KINDS)[number];
 
 interface Args {
   target: string | null;
   submit: boolean;
   emailOnly: boolean;
   alert: boolean;
+  byHand: boolean;
+  /** Which resume to attach; null means "whatever the job was classified as". */
+  resume: ResumeKind | null;
 }
 
 /**
@@ -50,12 +64,29 @@ interface Args {
  * silently dropped; refusing them is what stops that class of accident.
  */
 export function parseArgs(argv: string[]): Args | { error: string } {
-  const flags = argv.filter((a) => a.startsWith('-'));
+  // --resume takes a value, so its argument is consumed here rather than
+  // being mistaken for the job id.
+  const rest: string[] = [];
+  let resume: ResumeKind | null = null;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (!VALUED_FLAGS.includes(arg as (typeof VALUED_FLAGS)[number])) {
+      rest.push(arg);
+      continue;
+    }
+    const value = argv[++i];
+    if (!value || !RESUME_KINDS.includes(value as ResumeKind)) {
+      return { error: `--resume needs one of: ${RESUME_KINDS.join(', ')}` };
+    }
+    resume = value as ResumeKind;
+  }
+
+  const flags = rest.filter((a) => a.startsWith('-'));
   const unknown = flags.filter((f) => !FLAGS.includes(f as (typeof FLAGS)[number]));
   if (unknown.length > 0) {
     return { error: `unrecognised argument(s): ${unknown.join(', ')}` };
   }
-  const positional = argv.filter((a) => !a.startsWith('-'));
+  const positional = rest.filter((a) => !a.startsWith('-'));
   if (positional.length > 1) {
     return { error: `expected one job id or URL, got: ${positional.join(', ')}` };
   }
@@ -64,6 +95,8 @@ export function parseArgs(argv: string[]): Args | { error: string } {
     submit: flags.includes('--submit'),
     emailOnly: flags.includes('--email-only'),
     alert: flags.includes('--alert'),
+    byHand: flags.includes('--by-hand'),
+    resume,
   };
   if (args.submit && args.emailOnly) {
     return { error: '--submit and --email-only do different things; pass only one' };
@@ -77,6 +110,12 @@ export function parseArgs(argv: string[]): Args | { error: string } {
   }
   if (args.alert && !args.emailOnly) {
     return { error: '--alert only applies together with --email-only' };
+  }
+  if (args.byHand && !args.emailOnly) {
+    return { error: '--by-hand only applies together with --email-only' };
+  }
+  if (args.alert && args.byHand) {
+    return { error: '--alert and --by-hand are different emails; pass only one' };
   }
   return args;
 }
@@ -118,13 +157,25 @@ async function main() {
       process.exit(1);
     }
     const to = applyNotifyList(process.env);
-    log(`Sending the ${parsed.alert ? '"check by hand"' : '"Applied"'} email to ${to.join(', ')}`);
+    const which = parsed.alert
+      ? '"check by hand"'
+      : parsed.byHand
+        ? '"apply by hand"'
+        : '"Applied"';
+    log(`Sending the ${which} email to ${to.join(', ')}`);
     log('Subject line will be marked [test]; no application was or will be submitted.');
     if (parsed.alert) {
       await notifier.sendApplyAlert(
         job,
         to,
         'this is a test of the alert email; nothing was submitted',
+        true,
+      );
+    } else if (parsed.byHand) {
+      await notifier.sendApplyByHand(
+        job,
+        to,
+        'this is a test of the apply-by-hand email; no job was actually skipped',
         true,
       );
     } else {
@@ -142,8 +193,24 @@ async function main() {
     process.exit(1);
   }
 
+  // An unattended run would not touch a job with no role verdict, so neither
+  // does this one unless --resume says which document to send.
+  const role = parsed.resume ?? job.roleKind;
+  const resumeFileName = role ? resumeFor(profile, role) : null;
+  if (!resumeFileName) {
+    console.error(
+      role === 'other'
+        ? `${job.cardId} is neither an AI nor a software role, so no resume fits it. ` +
+            'Pass --resume ai|software to probe it anyway.'
+        : `${job.cardId} has no role verdict yet, so there is no resume to attach. ` +
+            'Pass --resume ai|software to probe it anyway.',
+    );
+    process.exit(1);
+  }
+
   log(`${parsed.submit ? 'APPLYING TO' : 'Probing'}: ${job.title.trim()} (${job.cardId})`);
-  log(`Resume to attach: ${profile.resumeFileName}`);
+  log(`Role: ${role}${parsed.resume ? ' (forced by --resume)' : ''}`);
+  log(`Resume to attach: ${resumeFileName}`);
   log(`Apply URL: ${job.applyUrl}`);
 
   // --- Real application ---
@@ -162,6 +229,7 @@ async function main() {
         applicator: createApplicator({ ...config, dryRun: false }, log),
         notifier: ctx.buildNotifier(),
         notifyTo: applyNotifyList(process.env),
+        resumeFileName,
         log,
       },
       job,
@@ -181,7 +249,10 @@ async function main() {
 
   // --- Dry run (default) ---
   // Forced: without --submit this must never be able to submit.
-  const result = await createApplicator({ ...config, dryRun: true }, log).apply(job);
+  const result = await createApplicator({ ...config, dryRun: true }, log).apply(
+    job,
+    resumeFileName,
+  );
 
   log(`Outcome: ${result.outcome}${result.reason ? ` — ${result.reason}` : ''}`);
   for (const shot of result.screenshots) log(`  screenshot: ${shot}`);

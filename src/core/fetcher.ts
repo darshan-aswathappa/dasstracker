@@ -79,6 +79,49 @@ function extractCategoryField(categories: string, label: string): string {
 }
 
 /**
+ * The longest posting body we keep. Descriptions run to a few thousand
+ * characters; the cap is there so one pathological posting cannot bloat the
+ * database or a model prompt.
+ */
+const MAX_DESCRIPTION_CHARS = 8000;
+
+/** The handful of entities the 3DS summaries actually contain. */
+const ENTITIES: Record<string, string> = {
+  '&nbsp;': ' ',
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&quot;': '"',
+  '&#39;': "'",
+  '&rsquo;': '\u2019',
+  '&lsquo;': '\u2018',
+  '&ldquo;': '\u201c',
+  '&rdquo;': '\u201d',
+  '&eacute;': '\u00e9',
+  '&egrave;': '\u00e8',
+};
+
+/**
+ * Turn the posting body's HTML into plain text.
+ *
+ * The API returns `content_summary` as a blob of markup. Only the words
+ * matter here — they are read by the role classifier and nothing renders
+ * them — so tags are dropped, block boundaries become spaces, and the handful
+ * of entities the summaries use are decoded. Runs once per job at fetch time.
+ */
+export function htmlToText(html: string): string {
+  if (!html) return '';
+  const text = html
+    // Script/style bodies are never prose; drop them whole.
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&[a-z]+;|&#\d+;/gi, (e) => ENTITIES[e.toLowerCase()] ?? ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > MAX_DESCRIPTION_CHARS ? text.slice(0, MAX_DESCRIPTION_CHARS) : text;
+}
+
+/**
  * The apply link for a requisition, for the roughly one posting in twenty
  * where the search API returns no Apply CTA at all. The pattern is the one the
  * careers site itself produces, with its source tag.
@@ -107,6 +150,7 @@ export function parseHit(hit: { metas?: Array<{ name: string; value: unknown }> 
     category: extractCategoryField(categories, 'Category'),
     products: extractCategoryField(categories, 'Products'),
     experience: extractCategoryField(categories, 'Year'),
+    description: htmlToText(metaValue(metas, 'content_summary')),
     postedAt: parseTimestamp(metaValue(metas, 'content_start_datetime')),
   };
 }

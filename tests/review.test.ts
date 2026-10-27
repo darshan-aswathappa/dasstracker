@@ -8,6 +8,7 @@ import {
 import { loadApplicationProfile } from '../src/core/profile.js';
 
 const profile = loadApplicationProfile();
+const RESUME = profile.resumes.ai;
 
 /** The real review page's text, as the probe captured it. */
 const GOOD_REVIEW = `
@@ -34,12 +35,12 @@ const GOOD_REVIEW = `
 
 describe('reviewProblems', () => {
   it('passes the real review page', () => {
-    expect(reviewProblems(GOOD_REVIEW, profile)).toEqual([]);
+    expect(reviewProblems(GOOD_REVIEW, profile, RESUME)).toEqual([]);
   });
 
   it('refuses when the resume is not listed', () => {
     const text = GOOD_REVIEW.replace(/Nireeksha_AI_Engineer\.pdf/g, 'Someone_Else.pdf');
-    expect(reviewProblems(text, profile)).toContain(
+    expect(reviewProblems(text, profile, RESUME)).toContain(
       'review does not list the resume Nireeksha_AI_Engineer.pdf',
     );
   });
@@ -49,16 +50,16 @@ describe('reviewProblems', () => {
       'Are you legally authorized to work in the country for which you are applying? Yes',
       'Are you legally authorized to work in the country for which you are applying? No',
     );
-    expect(reviewProblems(text, profile).join(' ')).toMatch(/work authorization/);
+    expect(reviewProblems(text, profile, RESUME).join(' ')).toMatch(/work authorization/);
   });
 
   it('refuses when diversity answers disagree', () => {
     const text = GOOD_REVIEW.replace('Gender Female', 'Gender Male');
-    expect(reviewProblems(text, profile).join(' ')).toMatch(/gender/);
+    expect(reviewProblems(text, profile, RESUME).join(' ')).toMatch(/gender/);
   });
 
   it('refuses a blank page rather than treating silence as agreement', () => {
-    expect(reviewProblems('', profile).length).toBeGreaterThan(0);
+    expect(reviewProblems('', profile, RESUME).length).toBeGreaterThan(0);
   });
 
   it('ignores sections the portal never asked about', () => {
@@ -66,13 +67,13 @@ describe('reviewProblems', () => {
     const text = `Will you now or in the future require sponsorship for employment visa status? Yes
       Are you legally authorized to work in the country for which you are applying? Yes
       Yes Yes Nireeksha_AI_Engineer.pdf`;
-    expect(reviewProblems(text, profile)).toEqual([]);
+    expect(reviewProblems(text, profile, RESUME)).toEqual([]);
   });
 
   it('is not fooled by the answer appearing far away from its question', () => {
     const text = `Gender ${'filler '.repeat(60)} Female
       Yes Yes Nireeksha_AI_Engineer.pdf`;
-    expect(reviewProblems(text, profile).join(' ')).toMatch(/gender/);
+    expect(reviewProblems(text, profile, RESUME).join(' ')).toMatch(/gender/);
   });
 });
 
@@ -108,14 +109,18 @@ describe('answers that a substring check would confuse', () => {
   it('does not accept "Female" as the answer "Male"', () => {
     const text = `Gender Female
       Yes Yes Nireeksha_AI_Engineer.pdf`;
-    const problems = reviewProblems(text, { ...profile, gender: 'Male' });
+    const problems = reviewProblems(text, { ...profile, gender: 'Male' }, RESUME);
     expect(problems.join(' ')).toMatch(/gender/);
   });
 
   it('does not accept "Not a Protected Veteran" as "Protected Veteran"', () => {
     const text = `Veterans Invitation to Self Identify Not a Protected Veteran
       Yes Yes Nireeksha_AI_Engineer.pdf`;
-    const problems = reviewProblems(text, { ...profile, veteranStatus: 'Protected Veteran' });
+    const problems = reviewProblems(
+      text,
+      { ...profile, veteranStatus: 'Protected Veteran' },
+      RESUME,
+    );
     expect(problems.join(' ')).toMatch(/veteran/);
   });
 
@@ -123,14 +128,14 @@ describe('answers that a substring check would confuse', () => {
     const text = `Veterans Invitation to Self Identify Not a Protected Veteran
       Gender Female
       Yes Yes Nireeksha_AI_Engineer.pdf`;
-    expect(reviewProblems(text, profile)).toEqual([]);
+    expect(reviewProblems(text, profile, RESUME)).toEqual([]);
   });
 
   it('does not read the next question’s answer as this one’s', () => {
     // "Gender" has no value of its own here; "Female" belongs to a later line.
     const text = `Gender Veterans Invitation to Self Identify Not a Protected Veteran Female
       Yes Yes Nireeksha_AI_Engineer.pdf`;
-    expect(reviewProblems(text, profile).join(' ')).toMatch(/gender/);
+    expect(reviewProblems(text, profile, RESUME).join(' ')).toMatch(/gender/);
   });
 });
 

@@ -19,21 +19,7 @@ export function registerRoutes(
     const q = req.query as { matched?: string; limit?: string };
     const onlyMatched = q.matched === '1' || q.matched === 'true';
     const limit = Math.min(Math.max(Number(q.limit) || 100, 1), 500);
-    const jobs = ctx.store.recentJobs(limit, onlyMatched);
-    const applied = new Set(
-      ctx.store
-        .recentApplications(500)
-        .filter((a) => a.status === 'submitted')
-        .map((a) => a.cardId),
-    );
-    // The posting body runs to thousands of characters and nothing in the UI
-    // shows it; sending 200 of them would be most of the response.
-    return {
-      jobs: jobs.map(({ description: _description, ...job }) => ({
-        ...job,
-        applied: applied.has(job.cardId),
-      })),
-    };
+    return { jobs: ctx.store.recentJobs(limit, onlyMatched) };
   });
 
   // Current config (no secrets).
@@ -83,22 +69,8 @@ export function registerRoutes(
       whatsappConfigured: ctx.buildWhatsApp().configured,
       jevConfigured: ctx.buildJev().configured,
       classification: ctx.store.classificationCounts(),
-      roles: ctx.store.roleCounts(),
-      autoApply: {
-        armed: ctx.autoApplyArmed(),
-        credentialed: ctx.buildApplicator().configured,
-        submitted: ctx.store.countApplications('submitted'),
-        failed: ctx.store.countApplications('failed'),
-        uncertain: ctx.store.countApplications('uncertain'),
-        inProgress: ctx.store.stuckApplications().length,
-      },
     };
   });
-
-  // Recent auto-apply attempts, newest first.
-  app.get('/api/applications', async () => ({
-    applications: ctx.store.recentApplications(50),
-  }));
 
   // Send a test email to verify SMTP credentials.
   app.post('/api/test-email', async (_req, reply) => {
@@ -124,15 +96,10 @@ export function registerRoutes(
           experience: '0 to 3 years',
           postedAt: new Date().toISOString(),
           firstSeenAt: new Date().toISOString(),
-          description: '',
           matched: true,
           notifiedAt: null,
           entryLevel: true,
           classifiedAt: new Date().toISOString(),
-          roleKind: 'ai',
-          roleClassifiedAt: new Date().toISOString(),
-          roleAttempts: 1,
-          roleAlertedAt: null,
         },
       ]);
       reply.send({ ok: true });

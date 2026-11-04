@@ -10,15 +10,7 @@
 import Database from 'better-sqlite3';
 import { dirname } from 'node:path';
 import { mkdirSync } from 'node:fs';
-import type {
-  Job,
-  RoleKind,
-  StoredJob,
-  ScanResult,
-  TrackerConfig,
-  Application,
-  ApplicationStatus,
-} from './types.js';
+import type { Job, StoredJob, ScanResult, TrackerConfig } from './types.js';
 
 export class Store {
   private db: Database.Database;
@@ -47,13 +39,8 @@ export class Store {
         matched       INTEGER NOT NULL DEFAULT 0,
         notified_at   TEXT,
         experience    TEXT NOT NULL DEFAULT '',
-        description   TEXT NOT NULL DEFAULT '',
         entry_level   INTEGER,
-        classified_at TEXT,
-        role_kind     TEXT,
-        role_classified_at TEXT,
-        role_attempts INTEGER NOT NULL DEFAULT 0,
-        role_alerted_at TEXT
+        classified_at TEXT
       );
 
       CREATE TABLE IF NOT EXISTS scans (
@@ -69,16 +56,6 @@ export class Store {
       CREATE TABLE IF NOT EXISTS settings (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS applications (
-        card_id      TEXT PRIMARY KEY,
-        status       TEXT NOT NULL,
-        attempts     INTEGER NOT NULL DEFAULT 1,
-        attempted_at TEXT NOT NULL,
-        submitted_at TEXT,
-        reason       TEXT,
-        screenshot   TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_jobs_first_seen ON jobs(first_seen_at DESC);
@@ -102,11 +79,6 @@ export class Store {
       ['experience', "TEXT NOT NULL DEFAULT ''"],
       ['entry_level', 'INTEGER'],
       ['classified_at', 'TEXT'],
-      ['description', "TEXT NOT NULL DEFAULT ''"],
-      ['role_kind', 'TEXT'],
-      ['role_classified_at', 'TEXT'],
-      ['role_attempts', 'INTEGER NOT NULL DEFAULT 0'],
-      ['role_alerted_at', 'TEXT'],
     ];
     for (const [name, decl] of additions) {
       if (!existing.has(name)) {
@@ -142,8 +114,8 @@ export class Store {
       .prepare(
         `INSERT OR IGNORE INTO jobs
            (card_id, title, url, apply_url, location, category, products,
-            posted_at, first_seen_at, matched, notified_at, experience, description)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+            posted_at, first_seen_at, matched, notified_at, experience)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
       )
       .run(
         job.cardId,
@@ -157,7 +129,6 @@ export class Store {
         firstSeenAt,
         matched ? 1 : 0,
         job.experience ?? '',
-        job.description ?? '',
       );
     return result.changes > 0;
   }
@@ -270,73 +241,6 @@ export class Store {
       .run(entryLevel === null ? null : entryLevel ? 1 : 0, classifiedAt, cardId);
   }
 
-  // --- Role classification (which resume an application carries) ---
-
-  /**
-   * Matched jobs still waiting on a role verdict.
-   *
-   * Only matched jobs are asked about: the role question costs one model call
-   * each because it reads the posting body, and an unmatched job is never
-   * applied to nor shown a badge. A job Jev has already failed to decide
-   * `maxAttempts` times is left alone — by then the answer is a human's.
-   */
-  jobsNeedingRoleClassification(maxAttempts = 2, limit = 50): StoredJob[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM jobs
-         WHERE matched = 1 AND role_kind IS NULL AND role_attempts < ?
-         ORDER BY first_seen_at DESC LIMIT ?`,
-      )
-      .all(maxAttempts, limit);
-    return rows.map(rowToJob);
-  }
-
-  /**
-   * Record a role verdict. A decided job is never asked about again; an
-   * undecided one only has its attempt counter raised, so it is retried on the
-   * next scan and then left for a human.
-   */
-  setRoleClassification(cardId: string, role: RoleKind | null, classifiedAt: string): void {
-    if (role === null) {
-      this.db
-        .prepare('UPDATE jobs SET role_attempts = role_attempts + 1 WHERE card_id = ?')
-        .run(cardId);
-      return;
-    }
-    this.db
-      .prepare(
-        `UPDATE jobs
-         SET role_kind = ?, role_classified_at = ?, role_attempts = role_attempts + 1
-         WHERE card_id = ?`,
-      )
-      .run(role, classifiedAt, cardId);
-  }
-
-  /** Attach a posting body to a job stored before descriptions were kept. */
-  setDescription(cardId: string, description: string): void {
-    this.db.prepare('UPDATE jobs SET description = ? WHERE card_id = ?').run(description, cardId);
-  }
-
-  /** Count of jobs per role verdict, for status reporting. */
-  roleCounts(): { ai: number; software: number; other: number; undecided: number } {
-    const row = this.db
-      .prepare(
-        `SELECT
-           SUM(CASE WHEN role_kind = 'ai' THEN 1 ELSE 0 END) AS ai,
-           SUM(CASE WHEN role_kind = 'software' THEN 1 ELSE 0 END) AS software,
-           SUM(CASE WHEN role_kind = 'other' THEN 1 ELSE 0 END) AS other,
-           SUM(CASE WHEN matched = 1 AND role_kind IS NULL THEN 1 ELSE 0 END) AS undecided
-         FROM jobs`,
-      )
-      .get() as Record<string, number | null>;
-    return {
-      ai: row.ai ?? 0,
-      software: row.software ?? 0,
-      other: row.other ?? 0,
-      undecided: row.undecided ?? 0,
-    };
-  }
-
   /** Attach an experience band to a job stored before the field existed. */
   setExperience(cardId: string, experience: string): void {
     this.db.prepare('UPDATE jobs SET experience = ? WHERE card_id = ?').run(experience, cardId);
@@ -361,157 +265,6 @@ export class Store {
       undecided: row.undecided ?? 0,
       pending: row.pending ?? 0,
     };
-  }
-
-  // --- Auto-apply bookkeeping ---
-
-  /**
-   * Entry-level matched jobs that are eligible for an auto-apply attempt.
-   *
-   * `since` excludes everything first seen before auto-apply was armed, so
-   * switching the feature on does not fire a burst of applications at the
-   * backlog. A job that failed is retried up to `maxAttempts`; one that was
-   * submitted is never touched again.
-   *
-   * A job only qualifies once Jev has said which resume it calls for. One
-   * ruled `other`, or never ruled on at all, is a job for a human and is
-   * listed by `jobsNeedingManualApply` instead.
-   */
-  jobsToAutoApply(since: string, maxAttempts = 3, limit = 10): StoredJob[] {
-    const rows = this.db
-      .prepare(
-        `SELECT j.* FROM jobs j
-         LEFT JOIN applications a ON a.card_id = j.card_id
-         WHERE j.entry_level = 1
-           AND j.matched = 1
-           AND j.role_kind IN ('ai', 'software')
-           AND j.first_seen_at >= ?
-           -- Only an outright failure is retried. in_progress means another
-           -- run holds it; uncertain means something may already have been
-           -- submitted; both stay out until a human looks.
-           AND (a.card_id IS NULL OR (a.status = 'failed' AND a.attempts < ?))
-         ORDER BY j.first_seen_at ASC
-         LIMIT ?`,
-      )
-      .all(since, maxAttempts, limit);
-    return rows.map(rowToJob);
-  }
-
-  /**
-   * Jobs the bot will not apply to on its own, and has not yet said so about.
-   *
-   * Two cases end up here: a posting Jev ruled is neither an AI nor a software
-   * role, and one it could not rule on even after a retry. Both are worth an
-   * email rather than a guess, since the only choice left would be which
-   * resume to attach. `role_alerted_at` makes that email happen once.
-   */
-  jobsNeedingManualApply(since: string, maxRoleAttempts = 2, limit = 10): StoredJob[] {
-    const rows = this.db
-      .prepare(
-        `SELECT j.* FROM jobs j
-         LEFT JOIN applications a ON a.card_id = j.card_id
-         WHERE j.entry_level = 1
-           AND j.matched = 1
-           AND j.first_seen_at >= ?
-           AND j.role_alerted_at IS NULL
-           AND a.card_id IS NULL
-           AND (j.role_kind = 'other'
-                OR (j.role_kind IS NULL AND j.role_attempts >= ?))
-         ORDER BY j.first_seen_at ASC
-         LIMIT ?`,
-      )
-      .all(since, maxRoleAttempts, limit);
-    return rows.map(rowToJob);
-  }
-
-  /** Mark that the "apply to this one by hand" email has gone out. */
-  markRoleAlerted(cardId: string, at: string): void {
-    this.db.prepare('UPDATE jobs SET role_alerted_at = ? WHERE card_id = ?').run(at, cardId);
-  }
-
-  /**
-   * Take exclusive ownership of a job before applying to it.
-   *
-   * Returns false when another run already holds it, or when it has reached a
-   * state that must not be retried. Claiming in the database rather than
-   * checking-then-acting is what stops an overlapping scan (the cron and a
-   * manual /api/scan can run at once) from submitting the same application
-   * twice.
-   */
-  claimForApplication(cardId: string, at: string, maxAttempts = 3): boolean {
-    const result = this.db
-      .prepare(
-        `INSERT INTO applications
-           (card_id, status, attempts, attempted_at, submitted_at, reason, screenshot)
-         VALUES (?, 'in_progress', 1, ?, NULL, NULL, NULL)
-         ON CONFLICT(card_id) DO UPDATE SET
-           status       = 'in_progress',
-           attempts     = applications.attempts + 1,
-           attempted_at = excluded.attempted_at
-         WHERE applications.status = 'failed' AND applications.attempts < ?`,
-      )
-      .run(cardId, at, maxAttempts);
-    return result.changes > 0;
-  }
-
-  /** Applications left mid-flight by a crash; they need a human, not a retry. */
-  stuckApplications(): Application[] {
-    const rows = this.db
-      .prepare(`SELECT * FROM applications WHERE status = 'in_progress'`)
-      .all();
-    return rows.map(rowToApplication);
-  }
-
-  /** True once a job has been successfully submitted. */
-  hasApplied(cardId: string): boolean {
-    const row = this.db
-      .prepare(`SELECT 1 FROM applications WHERE card_id = ? AND status = 'submitted'`)
-      .get(cardId);
-    return row !== undefined;
-  }
-
-  applicationFor(cardId: string): Application | null {
-    const row = this.db.prepare('SELECT * FROM applications WHERE card_id = ?').get(cardId);
-    return row ? rowToApplication(row) : null;
-  }
-
-  /** Record an attempt, incrementing the attempt counter on a retry. */
-  recordApplication(app: Omit<Application, 'attempts'>): void {
-    this.db
-      .prepare(
-        `INSERT INTO applications
-           (card_id, status, attempts, attempted_at, submitted_at, reason, screenshot)
-         VALUES (?, ?, 1, ?, ?, ?, ?)
-         ON CONFLICT(card_id) DO UPDATE SET
-           status       = excluded.status,
-           attempts     = applications.attempts + 1,
-           attempted_at = excluded.attempted_at,
-           submitted_at = excluded.submitted_at,
-           reason       = excluded.reason,
-           screenshot   = excluded.screenshot`,
-      )
-      .run(
-        app.cardId,
-        app.status,
-        app.attemptedAt,
-        app.submittedAt,
-        app.reason,
-        app.screenshot,
-      );
-  }
-
-  recentApplications(limit = 50): Application[] {
-    const rows = this.db
-      .prepare('SELECT * FROM applications ORDER BY attempted_at DESC LIMIT ?')
-      .all(limit);
-    return rows.map(rowToApplication);
-  }
-
-  countApplications(status: ApplicationStatus): number {
-    const row = this.db
-      .prepare('SELECT COUNT(*) AS n FROM applications WHERE status = ?')
-      .get(status) as { n: number };
-    return row.n;
   }
 
   // --- Settings (UI-editable config; secrets stay in env) ---
@@ -558,19 +311,6 @@ export class Store {
   }
 }
 
-function rowToApplication(row: unknown): Application {
-  const r = row as Record<string, unknown>;
-  return {
-    cardId: r.card_id as string,
-    status: r.status as ApplicationStatus,
-    attempts: (r.attempts as number) ?? 1,
-    attemptedAt: r.attempted_at as string,
-    submittedAt: (r.submitted_at as string | null) ?? null,
-    reason: (r.reason as string | null) ?? null,
-    screenshot: (r.screenshot as string | null) ?? null,
-  };
-}
-
 function rowToJob(row: unknown): StoredJob {
   const r = row as Record<string, unknown>;
   return {
@@ -588,10 +328,5 @@ function rowToJob(row: unknown): StoredJob {
     notifiedAt: (r.notified_at as string | null) ?? null,
     entryLevel: r.entry_level == null ? null : (r.entry_level as number) === 1,
     classifiedAt: (r.classified_at as string | null) ?? null,
-    description: (r.description as string) ?? '',
-    roleKind: (r.role_kind as RoleKind | null) ?? null,
-    roleClassifiedAt: (r.role_classified_at as string | null) ?? null,
-    roleAttempts: (r.role_attempts as number) ?? 0,
-    roleAlertedAt: (r.role_alerted_at as string | null) ?? null,
   };
 }

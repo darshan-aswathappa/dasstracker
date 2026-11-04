@@ -18,8 +18,36 @@ const USER_AGENT =
 
 export interface FetchQuery {
   lang: string;
-  type: string; // e.g. "Regular"
+  /**
+   * One 3DS job type ("Regular", "Graduate Program", "Internship"), several
+   * separated by commas, or "All" for no type filter.
+   */
+  type: string;
   country: string; // e.g. "United States"
+}
+
+/** The type value that turns the type filter off. */
+const ALL_TYPES = 'all';
+
+/**
+ * Read the configured type value as a list of 3DS job types. An empty list
+ * means "no type filter": the value was blank, or one of its entries is "All".
+ */
+export function parseTypes(raw: string): string[] {
+  const types = raw
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  return types.some((t) => t.toLowerCase() === ALL_TYPES) ? [] : types;
+}
+
+/** The `card_content_categories:(...)` clause for the given type and country. */
+function categoryClause(types: string[], country: string): string {
+  const countryTerm = `"country/${country}"`;
+  if (types.length === 0) return `(${countryTerm})`;
+  const typeTerms = types.map((t) => `"type/${t}"`);
+  const typeExpr = typeTerms.length === 1 ? typeTerms[0] : `(${typeTerms.join(' OR ')})`;
+  return `(${typeExpr} AND ${countryTerm})`;
 }
 
 /** Build the `q=` search expression for the given filters. */
@@ -27,7 +55,7 @@ export function buildQueryExpression(q: FetchQuery): string {
   return (
     `#all card_content_lang:${q.lang}   ` +
     `(card_content_type="career")  ` +
-    `card_content_categories:("type/${q.type}" AND "country/${q.country}")`
+    `card_content_categories:${categoryClause(parseTypes(q.type), q.country)}`
   );
 }
 

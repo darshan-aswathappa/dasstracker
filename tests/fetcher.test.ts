@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import {
   buildUrl,
+  buildQueryExpression,
+  parseTypes,
   parseResponse,
   parseTimestamp,
   parseHit,
@@ -29,6 +31,51 @@ describe('buildUrl', () => {
     expect(decoded).toContain('type/Regular');
     expect(decoded).toContain('country/United States');
     expect(decoded).toContain('desc(card_content_start_datetime)');
+  });
+});
+
+describe('parseTypes', () => {
+  it('reads a single type', () => {
+    expect(parseTypes('Regular')).toEqual(['Regular']);
+  });
+
+  it('splits a comma-separated list and trims each entry', () => {
+    expect(parseTypes(' Regular , Graduate Program,Internship ')).toEqual([
+      'Regular',
+      'Graduate Program',
+      'Internship',
+    ]);
+  });
+
+  it('means no type filter for "All" in any case, or for a blank value', () => {
+    expect(parseTypes('All')).toEqual([]);
+    expect(parseTypes('all')).toEqual([]);
+    expect(parseTypes('Regular, ALL')).toEqual([]);
+    expect(parseTypes('')).toEqual([]);
+    expect(parseTypes(' , ')).toEqual([]);
+  });
+});
+
+describe('buildQueryExpression', () => {
+  const base = { lang: 'en', country: 'United States' };
+
+  it('keeps the single-type query exactly as before', () => {
+    expect(buildQueryExpression({ ...base, type: 'Regular' })).toBe(
+      '#all card_content_lang:en   (card_content_type="career")  ' +
+        'card_content_categories:("type/Regular" AND "country/United States")',
+    );
+  });
+
+  it('ORs several types together under the country filter', () => {
+    expect(buildQueryExpression({ ...base, type: 'Regular, Graduate Program' })).toContain(
+      'card_content_categories:(("type/Regular" OR "type/Graduate Program") AND "country/United States")',
+    );
+  });
+
+  it('drops the type clause entirely for All', () => {
+    const q = buildQueryExpression({ ...base, type: 'All' });
+    expect(q).toContain('card_content_categories:("country/United States")');
+    expect(q).not.toContain('type/');
   });
 });
 
